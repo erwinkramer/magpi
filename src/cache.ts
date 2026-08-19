@@ -33,9 +33,8 @@ export interface CacheEntry {
 const TRACKING_PARAMS = /^(utm_|fbclid$|gclid$|msclkid$|mc_cid$|mc_eid$)/;
 
 /**
- * One URL, one cache entry: drop fragments and tracking params, sort the
- * query, lowercase the host, strip trailing slashes. The canonical form is
- * used both as the cache key and as the URL actually fetched.
+ * One URL, one cache entry: drop fragments and tracking params, sort the query, lowercase the host, strip trailing slashes.
+ * The canonical form is used both as the cache key and as the URL actually fetched.
  */
 export function canonicalize(url: URL): string {
   const u = new URL(url.href);
@@ -51,16 +50,15 @@ export function canonicalize(url: URL): string {
 
 /**
  * Human/model-legible layout: <root>/<host>/<path-slug>-<hash8>/
- * The slug lets the LLM ls/grep everything cached from a domain; the hash
- * guarantees uniqueness.
+ * The slug lets the LLM ls/grep everything cached from a domain; the hash guarantees uniqueness.
  *
- * One directory per URL, whatever the mode. A full fetch promotes the existing
- * entry in place instead of writing a second copy of the same page.
+ * One directory per URL, whatever the mode.
+ * A full fetch promotes the existing entry in place instead of writing a second copy of the same page.
  */
 export function entryDir(root: string, url: string): string {
   const u = new URL(url);
-  // The URL parser bans slashes in hostnames but allows "..", which would
-  // escape the cache root when joined. Neutralize all-dot hostnames.
+  // The URL parser bans slashes in hostnames but allows "..", which would escape the cache root when joined.
+  // Neutralize all-dot hostnames.
   const host = /^\.+$/.test(u.hostname) ? "invalid-host" : u.hostname;
   const hash8 = createHash("sha256").update(url).digest("hex").slice(0, 8);
   const slug =
@@ -123,8 +121,7 @@ export function store(
   mkdirSync(dir, { recursive: true });
   // Demotion: a light entry has no tree, so an earlier clone in this dir goes.
   // Safe when a handler just wrote one, since hasTree is true in that case.
-  // ponytail: a full fetch that throws before reaching here can leave a partial
-  // tree beside the old content; the next store or prune clears it.
+  // ponytail: a full fetch that throws before reaching here can leave a partial tree beside the old content; the next store or prune clears it.
   if (!data.hasTree) rmSync(join(dir, "tree"), { recursive: true, force: true });
   const meta: CacheMeta = {
     url,
@@ -205,8 +202,11 @@ export function listEntries(root: string): CacheEntry[] {
   return walkEntries(root);
 }
 
-/** Delete entries older than the ttl. Returns how many were removed. Walks the
- * files rather than the index: deletion decisions read the source of truth. */
+/**
+ * Delete entries older than the ttl.
+ * Returns how many were removed.
+ * Walks the files rather than the index: deletion decisions read the source of truth.
+ */
 export function prune(root: string, ttlHours: number): number {
   const expired = walkEntries(root).filter((e) => e.ageHours > ttlHours);
   for (const e of expired) rmSync(e.dir, { recursive: true, force: true });
@@ -244,8 +244,8 @@ export function searchContent(roots: string[], query: string, limit = 10): Recal
 }
 
 /**
- * Self-healing init: rebuild the index when it is corrupt, missing, or empty
- * while entry files exist. Returns what happened so the caller can notify.
+ * Self-healing init: rebuild the index when it is corrupt, missing, or empty while entry files exist.
+ * Returns what happened so the caller can notify.
  */
 export function heal(root: string): "ok" | "rebuilt" | "skipped" {
   if (!existsSync(root) || !cachedb.available()) return "skipped";

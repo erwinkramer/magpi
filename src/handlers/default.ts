@@ -2,8 +2,9 @@ import { htmlToMarkdown } from "../html.js";
 import { FetchError, defaultFetch, defineHandler, getText } from "./handler.js";
 
 /**
- * Catch-all: the default pipeline (GET -> pdf/llms.txt/readability). Always
- * last. Dead or blocked pages get one more chance via the Wayback Machine.
+ * Catch-all: the default pipeline (GET -> pdf/llms.txt/readability).
+ * Always last.
+ * Dead or blocked pages get one more chance via the Wayback Machine.
  */
 export const defaultHandler = defineHandler({
   name: "webpage",

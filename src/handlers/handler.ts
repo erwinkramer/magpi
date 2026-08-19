@@ -46,10 +46,9 @@ const TIMEOUT_MS = 30_000;
 const DNS_TIMEOUT_MS = 5_000;
 
 /**
- * Ceiling for one whole fetch, by mode. The per-request timeout above bounds a
- * single call, not a handler that makes several in a row, and nothing at all
- * bounds a dns lookup, a clone, or pdf text extraction. Full mode gets the
- * looser figure because it clones repos and unpacks archives.
+ * Ceiling for one whole fetch, by mode.
+ * The per-request timeout above bounds a single call, not a handler that makes several in a row, and nothing at all bounds a dns lookup, a clone, or pdf text extraction.
+ * Full mode gets the looser figure because it clones repos and unpacks archives.
  */
 export const FETCH_DEADLINE_MS: Record<FetchMode, number> = { light: 90_000, full: 300_000 };
 
@@ -81,8 +80,7 @@ export function isPrivateIp(ip: string): boolean {
 }
 
 /**
- * SSRF guard: model-supplied URLs must not reach loopback, link-local, or
- * private-range addresses (cloud metadata endpoints, intranet services).
+ * SSRF guard: model-supplied URLs must not reach loopback, link-local, or private-range addresses (cloud metadata endpoints, intranet services).
  * Checks the scheme, the hostname, literal IPs, and DNS-resolved addresses.
  */
 export async function assertPublicTarget(url: URL): Promise<void> {
@@ -97,11 +95,10 @@ export async function assertPublicTarget(url: URL): Promise<void> {
     if (isPrivateIp(host)) throw blocked(`${host} is a private address`);
     return;
   }
-  // Preflight resolves the name once; a redirect hop to a private
-  // address can still slip through. Upgrade path: manual redirect loop in httpGet.
+  // Preflight resolves the name once; a redirect hop to a private address can still slip through.
+  // Upgrade path: manual redirect loop in httpGet.
   try {
-    // node's dns lookup takes no signal and can sit on a threadpool slot
-    // forever, so the preflight gets its own clock.
+    // node's dns lookup takes no signal and can sit on a threadpool slot forever, so the preflight gets its own clock.
     const addrs = await Promise.race([
       lookup(host, { all: true }),
       new Promise<never>((_, reject) => {
@@ -121,9 +118,8 @@ function withTimeout(signal?: AbortSignal): AbortSignal {
 }
 
 /**
- * Run `work` under a hard deadline. Aborting is a request, not a guarantee:
- * extraction and archive walks are plain cpu work that ignores the signal, so
- * the deadline also rejects on its own and hands the caller back its turn.
+ * Run `work` under a hard deadline.
+ * Aborting is a request, not a guarantee: extraction and archive walks are plain cpu work that ignores the signal, so the deadline also rejects on its own and hands the caller back its turn.
  */
 export function withDeadline<T>(
   ms: number,
@@ -262,10 +258,8 @@ async function pdfToText(buf: ArrayBuffer): Promise<string> {
 
 /**
  * The default fetch pipeline: GET -> (pdf ? extract : html ? readability+markdown : as-is).
- * Checks for llms.txt first: sites that publish it have already done the
- * extraction for us. Every handler is built on this via defineHandler;
- * specialized handlers override fetch but reuse the same http/extract
- * helpers, so the tested plumbing is shared.
+ * Checks for llms.txt first: sites that publish it have already done the extraction for us.
+ * Every handler is built on this via defineHandler; specialized handlers override fetch but reuse the same http/extract helpers, so the tested plumbing is shared.
  */
 export const defaultFetch = async (url: URL, ctx: FetchContext): Promise<HandlerResult> => {
   const probes = ctx.mode === "full" ? ["llms-full.txt", "llms.txt"] : url.pathname === "/" ? ["llms.txt"] : [];

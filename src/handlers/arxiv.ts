@@ -2,9 +2,8 @@ import { decodeEntities } from "../html.js";
 import { type FetchContext, type HandlerResult, FetchError, defaultFetch, defineHandler, getText } from "./handler.js";
 
 /**
- * "/pdf/2301.00001v2.pdf" -> "2301.00001". Both suffixes can be present, so
- * they come off one at a time; old-style ids keep their archive prefix
- * ("math/0309136").
+ * "/pdf/2301.00001v2.pdf" -> "2301.00001".
+ * Both suffixes can be present, so they come off one at a time; old-style ids keep their archive prefix ("math/0309136").
  */
 export function paperId(pathname: string): string {
   return paperPdfId(pathname).replace(/v\d+$/, "");
@@ -41,9 +40,9 @@ export const arxivHandler = defineHandler({
   async fetch(url, ctx) {
     const id = paperId(url.pathname);
 
-    // Asking for /pdf/ (or full mode) means the caller wants the paper, not a
-    // summary of it. Metadata is a page of text; the paper is the reason the
-    // url was passed at all. defaultFetch sees application/pdf and extracts.
+    // Asking for /pdf/ (or full mode) means the caller wants the paper, not a summary of it.
+    // Metadata is a page of text; the paper is the reason the url was passed at all.
+    // defaultFetch sees application/pdf and extracts.
     if (ctx.mode === "full" || /^\/pdf\//.test(url.pathname)) {
       const paper = await defaultFetch(new URL(`https://arxiv.org/pdf/${paperPdfId(url.pathname)}`), { ...ctx, mode: "light" });
       return { ...paper, kind: "paper" };
@@ -52,10 +51,8 @@ export const arxivHandler = defineHandler({
     try {
       return await fromExportApi(id, ctx);
     } catch {
-      // export.arxiv.org rate-limits hard and drops out for stretches, while
-      // arxiv.org itself stays up. The abstract page carries the same
-      // metadata, so a failed api call is worth a second try rather than an
-      // error the model has to work around.
+      // export.arxiv.org rate-limits hard and drops out for stretches, while arxiv.org itself stays up.
+      // The abstract page carries the same metadata, so a failed api call is worth a second try rather than an error the model has to work around.
       return defaultFetch(new URL(`https://arxiv.org/abs/${id}`), { ...ctx, mode: "light" });
     }
   },

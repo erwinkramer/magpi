@@ -3,11 +3,9 @@ import { join } from "node:path";
 import type { CacheMeta } from "./cache.js";
 
 /**
- * SQLite index over the file cache: fast listing, stats, hit tracking, LRU
- * eviction, and FTS5 full-text recall. Strictly an accelerator; the files on
- * disk stay the source of truth and the index is rebuildable from them. Every
- * function here degrades to null/[] when sqlite is unavailable or the DB is
- * broken, and callers fall back to filesystem walks.
+ * SQLite index over the file cache: fast listing, stats, hit tracking, LRU eviction, and FTS5 full-text recall.
+ * Strictly an accelerator; the files on disk stay the source of truth and the index is rebuildable from them.
+ * Every function here degrades to null/[] when sqlite is unavailable or the DB is broken, and callers fall back to filesystem walks.
  */
 
 type DatabaseSync = InstanceType<typeof import("node:sqlite").DatabaseSync>;

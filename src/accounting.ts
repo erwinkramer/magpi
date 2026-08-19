@@ -1,12 +1,9 @@
 /**
- * Session counters for work magpi did itself. Every number here is measured
- * mechanically from magpi's own actions, with no dependency on the model or on
- * provider usage reporting, so the whole module runs in a plain unit test and
- * behaves identically in a headless run.
+ * Session counters for work magpi did itself.
+ * Every number here is measured mechanically from magpi's own actions, with no dependency on the model or on provider usage reporting, so the whole module runs in a plain unit test and behaves identically in a headless run.
  *
- * The saving magpi claims is context, not bandwidth: fetched content goes to
- * disk and only a preview reaches the prompt, and old previews are later
- * replaced by a path. Both of those are counted here.
+ * The saving magpi claims is context, not bandwidth: fetched content goes to disk and only a preview reaches the prompt, and old previews are later replaced by a path.
+ * Both of those are counted here.
  */
 
 /** Rough chars per token for prose and markdown. Good enough for a footer. */
@@ -39,9 +36,8 @@ export function recordFetch(fromCache: boolean, stale: boolean): void {
 }
 
 /**
- * Content kept out of the prompt: the truncated tail of a preview, or the whole
- * body when a batch returns paths only. Callers pass byte counts, which match
- * chars for ASCII and run slightly high otherwise; this is an estimate either way.
+ * Content kept out of the prompt: the truncated tail of a preview, or the whole body when a batch returns paths only.
+ * Callers pass byte counts, which match chars for ASCII and run slightly high otherwise; this is an estimate either way.
  */
 export function recordWithheld(chars: number): void {
   if (chars > 0) counters.withheldChars += chars;

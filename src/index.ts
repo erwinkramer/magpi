@@ -116,8 +116,9 @@ const toItems = (rows: Completion[], prefix = "") =>
   });
 
 /**
- * Complete a /magpi argument. Returns whole-argument values, since the picker
- * replaces everything typed after the command name. Exported for the selfcheck.
+ * Complete a /magpi argument.
+ * Returns whole-argument values, since the picker replaces everything typed after the command name.
+ * Exported for the selfcheck.
  */
 export function completeCommand(argumentPrefix: string) {
   const typed = argumentPrefix.replace(/^\s+/, "");
@@ -147,15 +148,12 @@ export default function (pi: ExtensionAPI) {
     ui: { setStatus(id: string, text: string): void };
   }
 
-  // Terse persistent footer: "🐦 magpi ▸G12 L3 · 40MB |": entries per cache,
-  // ▸ marks the write scope, total size last. The cache is real disk; keep
-  // its weight visible. Refreshed only when storage actually changes. The bird
-  // and the trailing bar mark where magpi's segment starts and stops, since
-  // other extensions share the status line.
+  // Terse persistent footer: "🐦 magpi ▸G12 L3 · 40MB |": entries per cache, ▸ marks the write scope, total size last.
+  // The cache is real disk; keep its weight visible.
+  // Refreshed only when storage changes.
+  // The bird and the trailing bar mark where magpi's segment starts and stops, since other extensions share the status line.
   //
-  // Every extension competes for this one line, so an empty cache is not worth
-  // a character: a zero count drops its tag, and no entries at all drops the
-  // whole segment.
+  // Every extension competes for this one line, so an empty cache is not worth a character: a zero count drops its tag, and no entries at all drops the whole segment.
   function updateStatus(ctx: StatusCtx) {
     if (!ctx.hasUI) return;
     const cfg = loadConfig(ctx.cwd, ctx.isProjectTrusted());
@@ -190,13 +188,11 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", () => cachedb.closeAll());
 
-  // Context thrift: old fetch previews are dead weight; the full text is on
-  // disk. Before each LLM call, replace all but the newest previews with a
-  // one-line pointer to the cached file.
+  // Context thrift: old fetch previews are dead weight; the full text is on disk.
+  // Before each LLM call, replace all but the newest previews with a one-line pointer to the cached file.
   pi.on("context", (event) => ({ messages: elideFetchPreviews(event.messages as never[]) }));
 
-  // If the user's prompt contains URLs that are already cached and fresh,
-  // tell the model where they live; it skips the fetch round-trip entirely.
+  // If the user's prompt contains URLs that are already cached and fresh, tell the model where they live; it skips the fetch round-trip entirely.
   pi.on("before_agent_start", (event, ctx) => {
     const urls = [...new Set(event.prompt.match(/https?:\/\/[^\s)\]}>"']+/g) ?? [])].slice(0, 8);
     if (urls.length === 0) return;
@@ -232,8 +228,7 @@ export default function (pi: ExtensionAPI) {
   /** Concurrent callers asking for one URL and mode share a single fetch. */
   async function fetchToCache(...args: Parameters<typeof fetchOnce>) {
     const [rawUrl, mode, refresh] = args;
-    // Refresh keys separately, so a refresh never joins a call that is allowed
-    // to answer from cache.
+    // Refresh keys separately, so a refresh never joins a call that is allowed to answer from cache.
     const key = `${mode}:${refresh ? "refresh:" : ""}${cache.canonicalize(normalizeUrl(rawUrl))}`;
     return share(key, () => fetchOnce(...args));
   }
@@ -246,8 +241,7 @@ export default function (pi: ExtensionAPI) {
     signal?: AbortSignal,
     onUpdate?: (partial: { content: Array<{ type: "text"; text: string }> }) => void,
   ) {
-    // Canonical form (no fragments/tracking params, sorted query) is both
-    // the cache key and the URL fetched, so variants of one page share an entry.
+    // Canonical form (no fragments/tracking params, sorted query) is both the cache key and the URL fetched, so variants of one page share an entry.
     const url = new URL(cache.canonicalize(normalizeUrl(rawUrl)));
     const cfg = loadConfig(ctx.cwd, ctx.isProjectTrusted());
     const roots = bothRoots(ctx.cwd, cfg);
@@ -372,9 +366,8 @@ export default function (pi: ExtensionAPI) {
 
       const { entry, fromCache, stale } = await fetchToCache(targets[0], mode, params.refresh, ctx, signal, onUpdate);
       const content = readFileSync(entry.contentPath, "utf8");
-      // With a topic, return the sections that answer it; without one, the head
-      // of the document. A topic that matches nothing falls back to the head, so
-      // a bad guess is never worse than no guess.
+      // With a topic, return the sections that answer it; without one, the head of the document.
+      // A topic that matches nothing falls back to the head, so a bad guess is never worse than no guess.
       const topical = params.topic ? matchTopic(content, params.topic, PREVIEW_BYTES) : undefined;
       const head = topical ? undefined : truncateHead(content, { maxLines: PREVIEW_LINES, maxBytes: PREVIEW_BYTES });
       const preview = topical?.content ?? head!.content;
@@ -414,9 +407,8 @@ export default function (pi: ExtensionAPI) {
         },
       };
     },
-    // Display-only (never touches session content or LLM context): a calm
-    // one-liner collapsed, full preview on expand. The bird is the same mark
-    // the status line carries, so a magpi call is recognizable at a glance.
+    // Display-only (never touches session content or LLM context): a calm one-liner collapsed, full preview on expand.
+    // The bird is the same mark the status line carries, so a magpi call is recognizable at a glance.
     renderCall(args, theme) {
       const a = (args ?? {}) as { url?: string; urls?: string[]; mode?: string; topic?: string };
       const target = a.url ?? (Array.isArray(a.urls) ? `${a.urls.length} urls` : "");
@@ -514,8 +506,7 @@ export default function (pi: ExtensionAPI) {
         details: { roots: Object.fromEntries(roots), count: entries.length },
       };
     },
-    // Without this pi falls back to printing the raw tool name, which is the
-    // one magpi line in the transcript that would carry no bird.
+    // Without this pi falls back to printing the raw tool name, which is the one magpi line in the transcript that would carry no bird.
     renderCall(args, theme) {
       const a = (args ?? {}) as { query?: string; filter?: string };
       const what = a.query ? `"${a.query}"` : a.filter ? `filter ${a.filter}` : "list";
@@ -523,11 +514,8 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // magpi_search registers at session_start, when every extension has loaded:
-  // if another search tool is active, magpi_search self-demotes to a fallback
-  // in its description/guidelines (pi has no tool-priority mechanism, so the
-  // prompt text is the lever). It stays registered either way, so the model
-  // can still fall back to it when the preferred tool breaks.
+  // magpi_search registers at session_start, when every extension has loaded: if another search tool is active, magpi_search self-demotes to a fallback in its description/guidelines (pi has no tool-priority mechanism, so the prompt text is the lever).
+  // It stays registered either way, so the model can still fall back to it when the preferred tool breaks.
   pi.on("session_start", () => {
     const active = new Set(pi.getActiveTools());
     const competitors = pi
@@ -594,9 +582,8 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
-      // All sources down/rate-limited: ask the human, unashamedly. The title is
-      // the only text pi's input dialog renders, so the whole briefing goes
-      // there; the placeholder is dropped in the TUI and shown over RPC.
+      // All sources down/rate-limited: ask the human, unashamedly.
+      // The title is the only text pi's input dialog renders, so the whole briefing goes there; the placeholder is dropped in the TUI and shown over RPC.
       if (ctx.hasUI) {
         const pasted = await ctx.ui.input(
           [
@@ -604,8 +591,7 @@ export default function (pi: ExtensionAPI) {
             "",
             `Look up:  ${params.query}`,
             "",
-            // One line per paragraph: the dialog wraps to the terminal, and a
-            // pre-wrapped paragraph comes out ragged on a narrow one.
+            // One line per paragraph: the dialog wraps to the terminal, and a pre-wrapped paragraph comes out ragged on a narrow one.
             "Paste result URLs below, one per line. Titles and snippets are welcome but not required, because the agent fetches and reads the pages itself. A single good link is enough to unblock it.",
             "",
             "Submit empty to skip, and the agent carries on without search results.",
@@ -755,8 +741,7 @@ export default function (pi: ExtensionAPI) {
         }
         case "help":
         case "?": {
-          // A notify balloon scrolls badly at this length, so the TUI gets a
-          // dismissable panel and every other mode gets the plain lines.
+          // A notify balloon scrolls badly at this length, so the TUI gets a dismissable panel and every other mode gets the plain lines.
           if (ctx.mode !== "tui") {
             notify(HELP);
             return;

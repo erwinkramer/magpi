@@ -1,6 +1,5 @@
-// Live network selfcheck: the promoted smoke test. Hits real free endpoints,
-// so individual sources may be rate-limited; each check tolerates its own
-// flakiness where that's expected, and the whole file skips when offline.
+// Live network selfcheck: the promoted smoke test.
+// Hits real free endpoints, so individual sources may be rate-limited; each check tolerates its own flakiness where that's expected, and the whole file skips when offline.
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -54,8 +53,7 @@ test("github handler returns readme with metadata header", { skip: !online }, as
 });
 
 test("arxiv handler answers a versioned pdf url", { skip: !online }, async () => {
-  // Whichever way it gets there: the export api, or the abstract page when
-  // export.arxiv.org is having one of its days.
+  // Whichever way it gets there: the export api, or the abstract page when export.arxiv.org is having one of its days.
   const r = await fetchVia("https://arxiv.org/abs/1706.03762");
   assert.ok(r.kind === "paper" || r.kind === "article", `unexpected kind ${r.kind}`);
   assert.match(r.content, /Attention Is All You Need/i);
@@ -63,9 +61,8 @@ test("arxiv handler answers a versioned pdf url", { skip: !online }, async () =>
 });
 
 test("a /pdf/ url yields the paper, not its abstract", { skip: !online }, async () => {
-  // The whole point of asking for the pdf. Metadata-only is a few hundred
-  // bytes and stops at the abstract, so both assertions below fail if the
-  // handler ever silently falls back to the abstract page again.
+  // The whole point of asking for the pdf.
+  // Metadata-only is a few hundred bytes and stops at the abstract, so both assertions below fail if the handler silently falls back to the abstract page.
   const r = await fetchVia("https://arxiv.org/pdf/1706.03762v7.pdf");
   assert.equal(r.kind, "paper");
   assert.ok(r.content.length > 20_000, `got ${r.content.length} bytes, not a full paper`);
@@ -91,11 +88,8 @@ test("at least one search source returns results", { skip: !online }, async () =
   assert.match(results[0].url, /^https?:\/\//);
 });
 
-// Each source has its own endpoint, its own shape, and its own way of breaking,
-// so one passing source says nothing about the other three. Individually they
-// are allowed to be rate-limited; collectively they are not, since a run where
-// every source is down would otherwise look the same as one where the parsers
-// all silently rotted.
+// Each source has its own endpoint, its own shape, and its own way of breaking, so one passing source says nothing about the other three.
+// Individually they are allowed to be rate-limited; collectively they are not, since a run where every source is down would otherwise look the same as one where the parsers all silently rotted.
 const SOURCES = ["ddg", "wikipedia", "hn", "context7"] as const;
 const reachable: string[] = [];
 

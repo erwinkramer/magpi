@@ -81,8 +81,7 @@ export function parseContext7(payload: unknown): SearchResult[] {
     if (typeof row?.id !== "string" || !(row.totalSnippets > 0)) continue;
     out.push({
       title: String(row.title ?? row.id),
-      // The plaintext API, not the human page: the site itself renders through
-      // javascript, while this returns docs the default handler stores as-is.
+      // The plaintext API, not the human page: the site itself renders through javascript, while this returns docs the default handler stores as-is.
       url: `https://context7.com/api/v1${row.id}?type=txt`,
       snippet: [row.description, `${row.totalSnippets} snippets`, row.trustScore ? `trust ${row.trustScore}` : ""]
         .filter(Boolean)
@@ -95,10 +94,9 @@ export function parseContext7(payload: unknown): SearchResult[] {
 }
 
 /**
- * Library documentation by name. Context7 indexes versioned docs for thousands
- * of libraries and answers without an API key, which keeps magpi's no-key rule
- * intact. Narrower than the others, so the model should ask for it by name when
- * it wants API docs rather than pages about a library.
+ * Library documentation by name.
+ * Context7 indexes versioned docs for thousands of libraries and answers without an API key, which keeps magpi's no-key rule intact.
+ * Narrower than the others, so the model should ask for it by name when it wants API docs rather than pages about a library.
  */
 async function searchContext7(query: string, signal?: AbortSignal): Promise<SearchResult[]> {
   return parseContext7(
@@ -119,14 +117,12 @@ export interface SearchOutcome {
 }
 
 /**
- * auto: ddg first (broadest), then wikipedia, then hn, then context7; stop at
- * the first source that returns anything. All are rate-limited free endpoints;
- * failures are expected and reported, not fatal.
+ * auto: ddg first (broadest), then wikipedia, then hn, then context7; stop at the first source that returns anything.
+ * All are rate-limited free endpoints; failures are expected and reported, not fatal.
  *
- * context7 sits last because it only knows libraries, so on a general query it
- * would answer confidently and wrongly. It earns the last slot by being the
- * steadiest of the four: when the other three are down it still replies. Ask
- * for it by name to search library docs directly.
+ * context7 sits last because it only knows libraries, so on a general query it would answer confidently and wrongly.
+ * It earns the last slot by being the steadiest of the four: when the other three are down it still replies.
+ * Ask for it by name to search library docs directly.
  */
 export async function webSearch(
   query: string,

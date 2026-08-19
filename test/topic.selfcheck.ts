@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { matchTopic, splitSections } from "../src/topic.js";
 
-/** Shaped like a real reference page: nav-heavy opening, one precise section,
- *  and a long overview that mentions every term in passing. */
+/**
+ * Shaped like a real reference page: nav-heavy opening, one precise section, and a long overview that mentions every term in passing.
+ */
 const DOC = [
   "# Coroutines and tasks",
   "This section outlines high-level asyncio APIs.",

@@ -44,8 +44,7 @@ test("elision fires on the reclaimed share, not an absolute size", () => {
   const big = "x".repeat(600);
   const messages = [fetchResult("/h/1.md", big), fetchResult("/h/2.md", big), fetchResult("/h/3.md", big)];
 
-  // One eligible preview: 600 chars reclaimed against 1800 invalidated, a third
-  // of the region, under the 0.4 share asked for here.
+  // One eligible preview: 600 chars reclaimed against 1800 invalidated, a third of the region, under the 0.4 share asked for here.
   elideFetchPreviews(messages as never[], 2, 0.4);
   assert.match((messages[0] as any).content[0].text, /^x+$/, "below the share, no elision");
 
@@ -55,8 +54,7 @@ test("elision fires on the reclaimed share, not an absolute size", () => {
   assert.match((messages[0] as any).content[0].text, /elided/);
   assert.match((messages[1] as any).content[0].text, /elided/);
 
-  // Another fetch makes /h/3.md eligible on its own: 600 against the 1800 that
-  // follow it, back under the share, so it survives while the committed stay elided.
+  // Another fetch makes /h/3.md eligible on its own: 600 against the 1800 that follow it, back under the share, so it survives while the committed stay elided.
   messages.push(fetchResult("/h/5.md", big));
   elideFetchPreviews(messages as never[], 2, 0.4);
   assert.match((messages[0] as any).content[0].text, /elided/, "committed stays elided");
@@ -64,8 +62,7 @@ test("elision fires on the reclaimed share, not an absolute size", () => {
 });
 
 test("a preview dwarfed by its conversation never triggers a pass", () => {
-  // Only what follows the rewritten message is invalidated, so the weight that
-  // matters sits after the preview, not before it.
+  // Only what follows the rewritten message is invalidated, so the weight that matters sits after the preview, not before it.
   const messages = [
     fetchResult("/big/1.md", "z".repeat(2_000)),
     { role: "assistant", content: "y".repeat(50_000) },

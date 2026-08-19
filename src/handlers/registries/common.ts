@@ -9,9 +9,8 @@ import {
 } from "../handler.js";
 
 /**
- * A registry entry: recognize a package URL, fetch its metadata/readme (light)
- * or download+extract the actual package (full). Adding a registry = adding
- * one file exporting one of these.
+ * A registry entry: recognize a package URL, fetch its metadata/readme (light) or download+extract the actual package (full).
+ * Adding a registry = adding one file exporting one of these.
  */
 export interface Registry {
   name: string;

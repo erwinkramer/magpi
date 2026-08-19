@@ -1,25 +1,20 @@
 /**
- * Return the sections of a document that answer a question, instead of its
- * first N lines. Reference pages open with navigation and a preamble, so the
- * head of the document is reliably the least useful part of it.
+ * Return the sections of a document that answer a question, instead of its first N lines.
+ * Reference pages open with navigation and a preamble, so the head of the document is reliably the least useful part of it.
  *
- * Scoring is deliberately in memory rather than through the FTS index: that
- * index stores one row per document, so it ranks documents against each other
- * and cannot rank sections within one. Moving to per-section rows is a schema
- * change this does not need.
+ * Scoring is deliberately in memory rather than through the FTS index: that index stores one row per document, so it ranks documents against each other and cannot rank sections within one.
+ * Moving to per-section rows is a schema change this does not need.
  */
 
 /**
- * A term in a heading counts far more than the same term in a body. Long
- * sections mention everything, so without this weight a big overview section
- * beats the precise section that actually answers the question.
+ * A term in a heading counts far more than the same term in a body.
+ * Long sections mention everything, so without this weight a big overview section beats the precise section that actually answers the question.
  */
 const HEADING_WEIGHT = 8;
 
 /**
- * Body mentions saturate: the second mention of a term says much less than the
- * first, and the hundredth says nothing. Without this a long overview outscores
- * the precise section simply by repeating the words more times.
+ * Body mentions saturate: the second mention of a term says much less than the first, and the hundredth says nothing.
+ * Without this a long overview outscores the precise section simply by repeating the words more times.
  */
 const TF_SATURATION = 1.2;
 
@@ -60,11 +55,7 @@ function score(section: string, wanted: string[]): number {
   return points;
 }
 
-/**
- * Headings go into the tool result for the model to read, so strip the anchor
- * furniture real docs leave behind: the marker prefix, permalink wrappers, and
- * trailing pilcrows or hashes.
- */
+/** Headings go into the tool result for the model to read, so strip the anchor furniture real docs leave behind: the marker prefix, permalink wrappers, and trailing pilcrows or hashes. */
 function cleanHeading(line: string): string {
   return line
     .replace(/^#+\s*/, "")
@@ -80,10 +71,8 @@ export interface TopicMatch {
 }
 
 /**
- * Best-scoring sections that fit the budget, highest first. Returns undefined
- * when the topic is empty or nothing matches, which is the caller's signal to
- * fall back to the head of the document: a bad topic must never return less
- * than no topic at all.
+ * Best-scoring sections that fit the budget, highest first.
+ * Returns undefined when the topic is empty or nothing matches, which is the caller's signal to fall back to the head of the document: a bad topic must never return less than no topic at all.
  */
 export function matchTopic(markdown: string, topic: string, budget: number): TopicMatch | undefined {
   const wanted = terms(topic);
@@ -95,8 +84,7 @@ export function matchTopic(markdown: string, topic: string, budget: number): Top
     .sort((a, b) => b.points - a.points);
   if (ranked.length === 0) return undefined;
 
-  // Budget alone would pad the answer with whatever happens to fit; a weak
-  // match is worse than nothing, because it displaces the file path advice.
+  // Budget alone would pad the answer with whatever happens to fit; a weak match is worse than nothing, because it displaces the file path advice.
   const floor = ranked[0].points * RELEVANCE_FLOOR;
   const picked: string[] = [];
   let used = 0;

@@ -24,7 +24,8 @@ export interface ExtractedPage {
 }
 
 /**
- * HTML -> readable markdown. Readability isolates the article; turndown converts.
+ * HTML -> readable markdown.
+ * Readability isolates the article; turndown converts.
  * Falls back to whole-body text when Readability finds nothing (SPAs, index pages).
  */
 export function htmlToMarkdown(html: string, url?: string): ExtractedPage {

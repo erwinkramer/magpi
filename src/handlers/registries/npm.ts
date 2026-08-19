@@ -9,10 +9,9 @@ export const npm: Registry = {
       const s = seg(url);
       if (s[0] === "package") return s.slice(1, s[1]?.startsWith("@") ? 3 : 2).join("/");
     }
-    // pi.dev's catalog is npm's "pi-package" keyword slice, so /packages/<name>
-    // is that npm package. Going to the registry skips the rendered page, which
-    // strips readme images and carries the site chrome. Scoped names 404 there,
-    // so one segment is the whole identifier.
+    // pi.dev's catalog is npm's "pi-package" keyword slice, so /packages/<name> is that npm package.
+    // Going to the registry skips the rendered page, which strips readme images and carries the site chrome.
+    // Scoped names 404 there, so one segment is the whole identifier.
     if (/^(www\.)?pi\.dev$/.test(url.hostname)) {
       const s = seg(url);
       if (s[0] === "packages" && s[1]) return s[1];

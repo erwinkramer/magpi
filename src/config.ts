@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-// Kept in sync with pi's project config dir. Imported lazily in index.ts to keep
-// this module importable in tests without pi installed.
+// Kept in sync with pi's project config dir.
+// Imported lazily in index.ts to keep this module importable in tests without pi installed.
 export let CONFIG_DIR = ".pi";
 export function setConfigDirName(name: string) {
   CONFIG_DIR = name;

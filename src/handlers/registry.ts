@@ -22,10 +22,7 @@ const handlers: MagpiHandler[] = [
   defaultHandler,
 ];
 
-/**
- * External handlers (from other extensions via pi.events "magpi:register-handler")
- * are prepended so they can shadow built-ins for their domains.
- */
+/** External handlers (from other extensions via pi.events "magpi:register-handler") are prepended so they can shadow built-ins for their domains. */
 export function registerHandler(h: MagpiHandler): void {
   if (!h || typeof h.name !== "string" || typeof h.match !== "function" || typeof h.fetch !== "function") {
     throw new Error("magpi: handler must have { name, match(url), fetch(url, ctx) }; build it with defineHandler()");
