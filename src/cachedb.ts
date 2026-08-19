@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { CacheMeta } from "./cache.js";
 
@@ -45,9 +45,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(url, title, content, dir UNIND
 
 const handles = new Map<string, DatabaseSync | null>();
 
-function db(root: string): DatabaseSync | null {
+/**
+ * `create` is for the write paths only.
+ * Reading must not conjure a cache: an install that has fetched nothing leaves no directory and no index file behind.
+ */
+function db(root: string, create = false): DatabaseSync | null {
   const cached = handles.get(root);
   if (cached !== undefined) return cached;
+  if (!create && !existsSync(join(root, "index.db"))) return null;
   let d: DatabaseSync | null = null;
   const sq = getSqlite();
   if (sq) {
@@ -99,7 +104,7 @@ export function quickCheck(root: string): boolean {
 const FTS_CONTENT_CAP = 2 * 1024 * 1024;
 
 export function upsert(root: string, dir: string, meta: CacheMeta, content: string, treeBytes: number): void {
-  const d = db(root);
+  const d = db(root, true);
   if (!d) return;
   try {
     d.prepare(
@@ -250,7 +255,7 @@ export function pickEvictions(root: string, maxBytes: number): string[] {
 
 /** Rebuild the index from walked filesystem entries. */
 export function reindex(root: string, entries: Array<{ dir: string; meta: CacheMeta; content: string; treeBytes: number }>): number {
-  const d = db(root);
+  const d = db(root, entries.length > 0);
   if (!d) return 0;
   try {
     d.exec("DELETE FROM entries; DELETE FROM fts;");

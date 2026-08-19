@@ -36,6 +36,21 @@ test("index-backed listing and stats match stored entries", { skip }, () => {
   assert.equal(cache.stats(root).entries, 0);
 });
 
+test("reading an unused cache creates nothing on disk", { skip }, () => {
+  // The status line asks both roots for stats at session start, before any fetch.
+  const root = join(mkdtempSync(join(tmpdir(), "magpi-db-")), "never-used");
+  assert.equal(cache.stats(root).entries, 0);
+  assert.equal(cache.listEntries(root).length, 0);
+  assert.equal(cache.searchContent([root], "anything"), null);
+  assert.equal(cache.heal(root), "skipped");
+  assert.ok(!existsSync(root), "no cache root");
+
+  // The first write still gets its index.
+  seed(root);
+  assert.ok(existsSync(join(root, "index.db")), "index.db appears on first write");
+  assert.equal(cache.stats(root).entries, 2);
+});
+
 test("full-text recall ranks by relevance, stems, and snips", { skip }, () => {
   const root = mkdtempSync(join(tmpdir(), "magpi-db-"));
   seed(root);
@@ -92,7 +107,8 @@ test("reindex rebuilds the search index from files on disk", { skip }, () => {
   rmSync(join(root, "index.db"), { force: true });
   rmSync(join(root, "index.db-wal"), { force: true });
   rmSync(join(root, "index.db-shm"), { force: true });
-  assert.equal(cache.searchContent([root], "tokio")!.length, 0);
+  // No index file means no index, and the caller falls back to the filesystem walk.
+  assert.equal(cache.searchContent([root], "tokio"), null);
 
   assert.equal(cache.reindexRoot(root), 2);
   assert.equal(cache.searchContent([root], "tokio")!.length, 1);
