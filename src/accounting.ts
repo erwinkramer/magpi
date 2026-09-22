@@ -27,6 +27,12 @@ export interface Counters {
 const zero = (): Counters => ({ fetches: 0, hits: 0, stale: 0, withheldChars: 0, elidedChars: 0, elisionPasses: 0 });
 
 let counters = zero();
+const resetHooks: Array<() => void> = [];
+
+/** Register a callback invoked whenever accounting.reset() runs. */
+export function onReset(hook: () => void): void {
+  resetHooks.push(hook);
+}
 
 /** One completed fetch, however it was served. */
 export function recordFetch(fromCache: boolean, stale: boolean): void {
@@ -60,6 +66,7 @@ export function snapshot(): Counters {
 /** New session, new numbers. */
 export function reset(): void {
   counters = zero();
+  for (const hook of resetHooks) hook();
 }
 
 /** Estimated tokens kept out of the context window. */

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { elideFetchPreviews } from "../src/prune.js";
+import { elideFetchPreviews, findElisionDrafts } from "../src/prune.js";
 
 const fetchResult = (path: string, text = "big preview ".repeat(100)) => ({
   role: "toolResult",
@@ -71,4 +71,19 @@ test("a preview dwarfed by its conversation never triggers a pass", () => {
   ];
   elideFetchPreviews(messages as never[], 2);
   assert.match((messages[0] as any).content[0].text, /^z+$/, "left alone despite being old");
+});
+
+test("findElisionDrafts generates canonical ContextEditEntry drafts", () => {
+  const entries = [
+    { sourceEntry: { id: "entry-1" }, messages: [fetchResult("/c/1.md", "a".repeat(1000))] },
+    { sourceEntry: { id: "entry-2" }, messages: [{ role: "assistant", content: "ok" }] },
+    { sourceEntry: { id: "entry-3" }, messages: [fetchResult("/c/2.md", "b".repeat(1000))] },
+    { sourceEntry: { id: "entry-4" }, messages: [fetchResult("/c/3.md", "c".repeat(1000))] },
+  ];
+
+  const drafts = findElisionDrafts(entries as never[], 2, 0);
+  assert.equal(drafts.length, 1);
+  assert.equal(drafts[0].type, "context_edit");
+  assert.equal(drafts[0].targetId, "entry-1");
+  assert.match(drafts[0].replacement.content[0].text, /preview elided.*\/c\/1\.md/);
 });

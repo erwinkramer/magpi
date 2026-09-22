@@ -60,7 +60,7 @@ The last-resort role is automatic: at session start MagPi looks for other active
 
 ## Beyond the cache
 
-- **Context pruning**: older fetch previews collapse to a one-line pointer before each LLM call. The full text stays on disk. Rewriting an old message costs a prompt cache break, so a pass runs only when the previews it reclaims are worth a large enough share of the context that break invalidates. A small preview in a long conversation is left alone.
+- **Context pruning**: older fetch previews collapse to a one-line pointer via canonical session context edits. The full text stays on disk. Rewriting an old message costs a prompt cache break, so a pass runs only when the previews it reclaims are worth a large enough share of the context that break invalidates. Edits persist in the session, surviving resume and branch navigation.
 - **Cache hints**: paste an already-cached URL into your prompt and the model is pointed straight at the local copy.
 - **Promotion**: one entry per URL. Fetching `full` after `light` upgrades that entry in place rather than storing the page twice, and a later `light` request is answered from the `full` copy.
 - **Dead links**: a 404 gets the Wayback Machine's latest snapshot, labeled with its capture date.
@@ -78,7 +78,7 @@ MagPi's game is fetching cheaply. So the ideal setup is both: search with someth
 
 pi-web-access also works on a bare install, through Exa MCP and pi's own Codex auth. Where the two differ is the model: its summaries, `answer` mode, and `source_check` run one, which buys the synthesis MagPi leaves to the agent. MagPi behaves the same on every model, which is worth more the smaller (or stranger) your model is.
 
-MagPi arranges this split automatically: at session start it looks for other active search tools, and if it finds one, `magpi_search` demotes itself and tells the model to prefer that tool by name. You install both, and each does what it's best at.
+MagPi arranges this split automatically: when other search tools are active, `magpi_search` dynamically demotes itself via diffed prompt guidelines and tells the model to prefer that tool by name. You install both, and each does what it's best at.
 
 ## `/magpi` command
 

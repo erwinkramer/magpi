@@ -12,7 +12,7 @@ import * as accounting from "./src/accounting.js";
 import * as cache from "./src/cache.js";
 import * as cachedb from "./src/cachedb.js";
 import { share } from "./src/inflight.js";
-import { elideFetchPreviews } from "./src/prune.js";
+import { findElisionDrafts } from "./src/prune.js";
 import { matchTopic } from "./src/topic.js";
 import {
   cacheRoot,
@@ -141,6 +141,15 @@ export function completeCommand(argumentPrefix: string) {
 export default function (pi: ExtensionAPI) {
   setConfigDirName(CONFIG_DIR_NAME);
 
+  const unsubs: Array<() => void> = [];
+  const listen = <E extends Parameters<typeof pi.on>[0]>(event: E, handler: Parameters<typeof pi.on>[1]) => {
+    const unsub = pi.on(event, handler as any);
+    if (typeof unsub === "function") unsubs.push(unsub);
+  };
+
+  // URLs fetched this session; forwarded as cache hints across compactions.
+  const sessionFetches = new Map<string, { url: string; contentPath: string; treePath?: string }>();
+
   interface StatusCtx {
     cwd: string;
     hasUI: boolean;
@@ -148,7 +157,7 @@ export default function (pi: ExtensionAPI) {
     ui: { setStatus(id: string, text: string): void };
   }
 
-  // Terse persistent footer: "🐦 magpi ▸G12 L3 · 40MB |": entries per cache, ▸ marks the write scope, total size last.
+  // Terse persistent footer: "magpi ▸G12 L3 · 40MB |": entries per cache, ▸ marks the write scope, total size last.
   // The cache is real disk; keep its weight visible.
   // Refreshed only when storage changes.
   // The bird and the trailing bar mark where magpi's segment starts and stops, since other extensions share the status line.
@@ -174,8 +183,9 @@ export default function (pi: ExtensionAPI) {
     return [writeRoot, writeRoot === globalCacheRoot() ? projectCacheRoot(cwd) : globalCacheRoot()];
   };
 
-  pi.on("session_start", (_event, ctx) => {
+  listen("session_start", (_event, ctx) => {
     accounting.reset();
+    sessionFetches.clear();
     const trusted = ctx.isProjectTrusted();
     for (const p of invalidConfigPaths(ctx.cwd, trusted)) {
       if (ctx.hasUI) ctx.ui.notify(`🐦 magpi: invalid JSON in ${p}; using defaults`, "error");
@@ -186,14 +196,58 @@ export default function (pi: ExtensionAPI) {
     updateStatus(ctx);
   });
 
-  pi.on("session_shutdown", () => cachedb.closeAll());
+  listen("session_shutdown", () => {
+    cachedb.closeAll();
+    for (const unsub of unsubs) unsub();
+    unsubs.length = 0;
+  });
 
-  // Context thrift: old fetch previews are dead weight; the full text is on disk.
-  // Before each LLM call, replace all but the newest previews with a one-line pointer to the cached file.
-  pi.on("context", (event) => ({ messages: elideFetchPreviews(event.messages as never[]) }));
+  // Keep cache paths alive through compaction: when compaction discards earlier conversation turns,
+  // tell the model where all URLs fetched this session live on disk so it can read them without refetching.
+  listen("session_compact", () => {
+    if (sessionFetches.size === 0) return;
+    const lines = [...sessionFetches.values()].map(
+      (f) => `${f.url} -> ${f.contentPath}${f.treePath ? ` (+ files: ${f.treePath})` : ""}`,
+    );
+    pi.sendMessage(
+      {
+        customType: "magpi-cache-hint",
+        content: `magpi: cached web content from earlier in this session:\n${lines.join("\n")}\nRead these paths instead of refetching.`,
+        display: false,
+      },
+      { deliverAs: "nextTurn" },
+    );
+  });
+
+  // Context thrift: old magpi_fetch previews are dead weight; the full text is on disk.
+  // At each turn boundary, generate append-only ContextEditEntry drafts to replace aged previews with cache paths.
+  // Pi commits them canonically: survives restart/branch navigation and preserves prompt cache across turns.
+  listen("turn_end", (event, ctx) => {
+    const projection = ctx.sessionManager?.buildSessionProjection();
+    if (!projection) return;
+    const drafts = findElisionDrafts(projection.entries as never[]);
+    if (drafts.length === 0) return;
+    return {
+      entries: [...((event as any).entries ?? []), ...drafts],
+    };
+  });
 
   // If the user's prompt contains URLs that are already cached and fresh, tell the model where they live; it skips the fetch round-trip entirely.
-  pi.on("before_agent_start", (event, ctx) => {
+  listen("before_agent_start", (event, ctx) => {
+    // Dynamic search-tool self-demotion: if another search tool is active, demote magpi_search
+    // via diffed prompt guidelines so the prompt cache prefix is preserved.
+    const active = new Set(pi.getActiveTools());
+    const competitors = pi
+      .getAllTools()
+      .filter((t) => t.name !== "" && t.name !== "magpi_search" && /search/i.test(t.name) && active.has(t.name))
+      .map((t) => t.name);
+    if (competitors.length > 0 && event.systemPromptOptions?.toolGuidelines) {
+      const rivals = competitors.join(", ");
+      event.systemPromptOptions.toolGuidelines["magpi_search"] = [
+        `Prefer ${rivals} for web searches; use magpi_search only if ${rivals} fails or is unavailable. Either way, magpi_fetch the promising URLs. If all search fails, ask the user to search and paste results; do not silently fall back to memory.`,
+      ];
+    }
+
     const urls = [...new Set(event.prompt.match(/https?:\/\/[^\s)\]}>"']+/g) ?? [])].slice(0, 8);
     if (urls.length === 0) return;
     const cfg = loadConfig(ctx.cwd, ctx.isProjectTrusted());
@@ -285,6 +339,7 @@ export default function (pi: ExtensionAPI) {
         stale = true;
       }
     }
+    sessionFetches.set(url.href, { url: url.href, contentPath: entry.contentPath, treePath: entry.treePath });
     accounting.recordFetch(fromCache, stale);
     return { entry, fromCache, stale };
   }
@@ -514,36 +569,15 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // magpi_search registers at session_start, when every extension has loaded: if another search tool is active, magpi_search self-demotes to a fallback in its description/guidelines (pi has no tool-priority mechanism, so the prompt text is the lever).
-  // It stays registered either way, so the model can still fall back to it when the preferred tool breaks.
-  pi.on("session_start", () => {
-    const active = new Set(pi.getActiveTools());
-    const competitors = pi
-      .getAllTools()
-      .filter((t) => t.name !== "" && /search/i.test(t.name) && active.has(t.name))
-      .map((t) => t.name);
-    registerSearchTool(competitors);
-  });
-
-  function registerSearchTool(competitors: string[]) {
-    const deferring = competitors.length > 0;
-    const rivals = competitors.join(", ");
-    pi.registerTool({
-      name: "magpi_search",
-      label: "Web Search",
-      description:
-        (deferring
-          ? `FALLBACK web search. Prefer ${rivals} for searches; use magpi_search only when ${rivals} is unavailable, failing, or rate-limited. `
-          : "") +
-        "Best-effort web search with no API keys: DuckDuckGo Lite, Wikipedia, HN Algolia, and Context7 (all rate-limited free endpoints). Returns titles, URLs and snippets; follow up with magpi_fetch on promising URLs. Set source to 'context7' to search library and framework documentation by name, which beats a general web search for API questions. If every source fails, ask the user to run the search and paste results.",
-      promptSnippet: deferring
-        ? `Fallback web search without API keys, (prefer ${rivals})`
-        : "Best-effort web search (DDG Lite, Wikipedia, HN, Context7 docs), no API keys",
-      promptGuidelines: [
-        deferring
-          ? `Prefer ${rivals} for web searches; use magpi_search only if ${rivals} fails or is unavailable. Either way, magpi_fetch the promising URLs. If all search fails, ask the user to search and paste results; do not silently fall back to memory.`
-          : "Use magpi_search for lookups instead of saying you cannot search; then magpi_fetch the promising URLs. If magpi_search fails or returns nothing useful, ask the user to search and paste results; do not silently fall back to memory.",
-      ],
+  pi.registerTool({
+    name: "magpi_search",
+    label: "Web Search",
+    description:
+      "Best-effort web search with no API keys: DuckDuckGo Lite, Wikipedia, HN Algolia, and Context7 (all rate-limited free endpoints). Returns titles, URLs and snippets; follow up with magpi_fetch on promising URLs. Set source to 'context7' to search library and framework documentation by name, which beats a general web search for API questions. If every source fails, ask the user to run the search and paste results.",
+    promptSnippet: "Best-effort web search (DDG Lite, Wikipedia, HN, Context7 docs), no API keys",
+    promptGuidelines: [
+      "Use magpi_search for lookups instead of saying you cannot search; then magpi_fetch the promising URLs. If magpi_search fails or returns nothing useful, ask the user to search and paste results; do not silently fall back to memory.",
+    ],
     parameters: Type.Object({
       query: Type.String({ description: "Search query" }),
       source: Type.Optional(
@@ -635,8 +669,7 @@ export default function (pi: ExtensionAPI) {
       }
       return new Text(line, 0, 0);
     },
-    });
-  }
+  });
 
   pi.registerCommand("magpi", {
     description: "🐦 magpi: status | cache stats|clear|prune | scope global|project | ttl <hours> | max <MB> | reindex | handlers | help",
