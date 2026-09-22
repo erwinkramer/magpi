@@ -8,12 +8,12 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { readFileSync } from "node:fs";
-import * as accounting from "./accounting.js";
-import * as cache from "./cache.js";
-import * as cachedb from "./cachedb.js";
-import { share } from "./inflight.js";
-import { elideFetchPreviews } from "./prune.js";
-import { matchTopic } from "./topic.js";
+import * as accounting from "./src/accounting.js";
+import * as cache from "./src/cache.js";
+import * as cachedb from "./src/cachedb.js";
+import { share } from "./src/inflight.js";
+import { elideFetchPreviews } from "./src/prune.js";
+import { matchTopic } from "./src/topic.js";
 import {
   cacheRoot,
   globalCacheRoot,
@@ -24,10 +24,10 @@ import {
   projectConfigPath,
   saveConfig,
   setConfigDirName,
-} from "./config.js";
-import { FETCH_DEADLINE_MS, assertPublicTarget, type FetchMode, withDeadline } from "./handlers/handler.js";
-import { listHandlers, registerHandler, resolveHandler } from "./handlers/registry.js";
-import { formatResults, webSearch } from "./search.js";
+} from "./src/config.js";
+import { FETCH_DEADLINE_MS, assertPublicTarget, type FetchMode, withDeadline } from "./src/handlers/handler.js";
+import { listHandlers, registerHandler, resolveHandler } from "./src/handlers/registry.js";
+import { formatResults, webSearch } from "./src/search.js";
 
 // Keep preview small: the full text is on disk, pi's read tool pages the rest.
 const PREVIEW_LINES = 150;
@@ -471,7 +471,7 @@ export default function (pi: ExtensionAPI) {
         }
         if (hits) {
           return {
-            content: [{ type: "text", text: `Nothing cached matches "${params.query}". magpi_fetch or magpi_search the web instead.` }],
+            content: [{ type: "text", text: `Nothing cached matches "${params.query}". magpi_fetch or search the web instead.` }],
             details: { query: params.query, hits: 0 },
           };
         }
@@ -520,7 +520,7 @@ export default function (pi: ExtensionAPI) {
     const active = new Set(pi.getActiveTools());
     const competitors = pi
       .getAllTools()
-      .filter((t) => t.name !== "magpi_search" && /search/i.test(t.name) && active.has(t.name))
+      .filter((t) => t.name !== "" && /search/i.test(t.name) && active.has(t.name))
       .map((t) => t.name);
     registerSearchTool(competitors);
   });
@@ -537,7 +537,7 @@ export default function (pi: ExtensionAPI) {
           : "") +
         "Best-effort web search with no API keys: DuckDuckGo Lite, Wikipedia, HN Algolia, and Context7 (all rate-limited free endpoints). Returns titles, URLs and snippets; follow up with magpi_fetch on promising URLs. Set source to 'context7' to search library and framework documentation by name, which beats a general web search for API questions. If every source fails, ask the user to run the search and paste results.",
       promptSnippet: deferring
-        ? `Fallback web search (prefer ${rivals}), no API keys`
+        ? `Fallback web search without API keys, (prefer ${rivals})`
         : "Best-effort web search (DDG Lite, Wikipedia, HN, Context7 docs), no API keys",
       promptGuidelines: [
         deferring

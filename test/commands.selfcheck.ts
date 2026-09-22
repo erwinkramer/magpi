@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { completeCommand } from "../src/index.js";
+import { completeCommand } from "../index.js";
 
 const values = (prefix: string) => (completeCommand(prefix) ?? []).map((i) => i.value);
 
