@@ -23,6 +23,13 @@ type Ctx = {
 
 const URL = "https://magpi-selfcheck.invalid/page";
 
+/** A stub handler answering the selfcheck URL without a network round-trip. */
+const stubHandler = (content: string) => ({
+  name: "selfcheck-stub",
+  match: (u: globalThis.URL) => u.hostname === "magpi-selfcheck.invalid",
+  fetch: async () => ({ kind: "article", content }),
+});
+
 /**
  * Boot the extension against a fake ExtensionAPI.
  * Cache writes go to the temp project dir (project scope), so the suite never reads or writes the user's real cache except read-only lookups that miss.
@@ -34,12 +41,14 @@ function bootProjectScope() {
     on: (_event: string, _handler: never) => undefined,
     registerTool: (t: Tool) => tools.set(t.name, t),
     registerCommand: (_name: string, _def: never) => {},
-    events: { on: (_name: string, _fn: never) => {} },
+    // Capture the handler-registration hook so tests can install a stub handler for the selfcheck URL.
+    events: { on: (name: string, fn: never) => { if (name === "magpi:register-handler") registerHook = fn as (h: unknown) => void; } },
     exec: async () => ({ stdout: "", stderr: "", code: 0 }),
     getActiveTools: () => [],
     getAllTools: () => [],
     sendMessage: () => {},
   };
+  let registerHook: ((h: unknown) => void) | undefined;
   magpi(pi as never);
 
   const cfgPath = projectConfigPath(cwd);
@@ -54,7 +63,7 @@ function bootProjectScope() {
   };
   const run = (params: Record<string, unknown>) =>
     tools.get("magpi_fetch")!.execute("selfcheck", params, new AbortController().signal, undefined, ctx);
-  return { root: projectCacheRoot(cwd), run };
+  return { root: projectCacheRoot(cwd), run, registerHandler: (h: unknown) => registerHook!(h) };
 }
 
 /**
@@ -115,4 +124,36 @@ test("a stale hit (expired entry, network down) keeps the full preview", async (
   assert.ok(text.includes("STALE: network unavailable"), "footer says the network failed");
   assert.ok(text.includes("SECRET-MARKER"), "the preview is still served: the file may be the only copy");
   assert.equal(accounting.snapshot().stale, 1, "counted as a stale serve");
+});
+
+/**
+ * Boot a fresh project scope with the stub handler installed, so the fetch really runs the handler (no cache to hit).
+ */
+async function freshFetch(content: string, params: Record<string, unknown> = {}) {
+  accounting.reset();
+  const { run, registerHandler } = bootProjectScope();
+  registerHandler(stubHandler(content));
+  const result = await run({ url: URL, ...params });
+  return { result, text: result.content[0].text };
+}
+
+test("preview: false returns the cache path without the preview body", async () => {
+  const body = "fresh fetch SECRET-MARKER body\n";
+  const { result, text } = await freshFetch(body, { preview: false });
+
+  assert.equal(result.details.fromCache, false, "really fetched, not served from cache");
+  const contentPath = (result.details as { contentPath: string }).contentPath;
+  assert.ok(text.includes(contentPath), "the cache path is returned");
+  assert.ok(text.includes("Read/grep the path above for content."), "footer points at the file");
+  assert.ok(text.includes("magpi: article via selfcheck-stub"), "footer names the kind and handler");
+  assert.ok(!text.includes("SECRET-MARKER"), "the preview body stays out of the prompt");
+  assert.equal(accounting.snapshot().withheldChars, body.length, "the whole body counts as withheld");
+});
+
+test("default single-URL fetch still includes the preview body", async () => {
+  const { result, text } = await freshFetch("fresh fetch SECRET-MARKER body\n");
+
+  assert.equal(result.details.fromCache, false, "really fetched");
+  assert.ok(text.includes("SECRET-MARKER"), "the default keeps the preview");
+  assert.ok(text.includes("full text:"), "footer still points at the full text");
 });

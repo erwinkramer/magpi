@@ -380,7 +380,7 @@ export default function (pi: ExtensionAPI) {
     name: "magpi_fetch",
     label: "Web Fetch",
     description:
-      "Fetch URLs with smart extraction and a persistent disk cache. Specialized handling for GitHub/GitLab (README or full clone; issues/PRs), package registries (npm, pi.dev, PyPI, crates.io, Go, RubyGems, Packagist, Hex, Maven: metadata or full package download), Wikipedia/Wikidata, Stack Overflow/Stack Exchange (Q + top answers), Reddit threads, arXiv papers, and generic webpages (readable markdown). Single url returns a preview plus the cached file path; read/grep that path for the rest instead of refetching. Pass topic to get the sections of the page that answer your question rather than its opening lines. Pass urls (array) to batch-fetch up to 5 in parallel (paths only). Refetching an already-cached URL returns only the cache path, not the body. Falls back to a stale cached copy if the network is down.",
+      "Fetch URLs with smart extraction and a persistent disk cache. Specialized handling for GitHub/GitLab (README or full clone; issues/PRs), package registries (npm, pi.dev, PyPI, crates.io, Go, RubyGems, Packagist, Hex, Maven: metadata or full package download), Wikipedia/Wikidata, Stack Overflow/Stack Exchange (Q + top answers), Reddit threads, arXiv papers, and generic webpages (readable markdown). Single url returns a preview plus the cached file path; read/grep that path for the rest instead of refetching. Pass preview: false for cache paths only (no preview body) when you will read/grep the file. Pass topic to get the sections of the page that answer your question rather than its opening lines. Pass urls (array) to batch-fetch up to 5 in parallel (paths only). Refetching an already-cached URL returns only the cache path, not the body. Falls back to a stale cached copy if the network is down.",
     promptSnippet: "Fetch any URL (webpage, repo, package, wiki) with smart extraction and disk caching",
     promptGuidelines: [
       "Use magpi_fetch whenever the user shares a URL or web content is needed; it caches to disk; read/grep the returned cache path for more detail instead of calling magpi_fetch again.",
@@ -404,6 +404,9 @@ export default function (pi: ExtensionAPI) {
         }),
       ),
       refresh: Type.Optional(Type.Boolean({ description: "Bypass the cache and refetch" })),
+      preview: Type.Optional(
+        Type.Boolean({ description: "false: return cache paths only, no preview body — for when you will read/grep the file yourself" }),
+      ),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       // Dedupe before slicing: a repeated url should not spend one of the five.
@@ -437,6 +440,27 @@ export default function (pi: ExtensionAPI) {
         treePath: entry.treePath,
       };
       const filesLine = entry.treePath ? `files: ${entry.treePath} (use ls/read/grep there)` : "";
+      // When the entry came from the network versus the cache, in the words the footers below share.
+      const when = fromCache
+        ? ` | cached ${ageString(entry.ageHours)} ago (${entry.meta.fetchedAt})${stale ? " | STALE: network unavailable, serving old copy" : ""}`
+        : ` | fetched ${entry.meta.fetchedAt}`;
+
+      // preview: false is the batch-mode contract for a single url: paths only, the body stays on disk for a read/grep.
+      if (params.preview === false) {
+        accounting.recordWithheld(entry.meta.contentBytes);
+        const text = [
+          `✓ ${entry.meta.url}`,
+          `   -> ${entry.contentPath}`,
+          entry.treePath ? `   -> ${entry.treePath} (files)` : "",
+          "",
+          "---",
+          `magpi: ${entry.meta.kind} via ${entry.meta.handler} (${formatSize(entry.meta.contentBytes)})${when}`,
+          "Read/grep the path above for content.",
+        ]
+          .filter(Boolean)
+          .join("\n");
+        return { content: [{ type: "text", text }], details: { ...details, preview: false } };
+      }
 
       // Fresh cache hit: the body is already on disk (and usually already in context).
       // Echoing it again costs tokens for zero information — just point at the file, without even reading it.
@@ -468,10 +492,7 @@ export default function (pi: ExtensionAPI) {
       const footer = [
         "",
         "---",
-        `magpi: ${entry.meta.kind} via ${entry.meta.handler}` +
-          (fromCache
-            ? ` | cached ${ageString(entry.ageHours)} ago (${entry.meta.fetchedAt})${stale ? " | STALE: network unavailable, serving old copy" : ""}`
-            : ` | fetched ${entry.meta.fetchedAt}`),
+        `magpi: ${entry.meta.kind} via ${entry.meta.handler}${when}`,
         topical ? `sections matching "${params.topic}": ${topical.headings.join(" | ")}` : "",
         `full text: ${entry.contentPath} (${formatSize(entry.meta.contentBytes)})` +
           (topical || head!.truncated ? " (partial view above; read the file for the rest)" : ""),
