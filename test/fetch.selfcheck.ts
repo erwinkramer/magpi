@@ -21,6 +21,8 @@ type Ctx = {
   ui: { setStatus: () => void; notify: () => void };
 };
 
+const URL = "https://magpi-selfcheck.invalid/page";
+
 /**
  * Boot the extension against a fake ExtensionAPI.
  * Cache writes go to the temp project dir (project scope), so the suite never reads or writes the user's real cache except read-only lookups that miss.
@@ -55,33 +57,26 @@ function bootProjectScope() {
   return { root: projectCacheRoot(cwd), run };
 }
 
-/** Seed a fresh light entry under the given url and return its meta. */
-function seed(root: string, url: string, content: string) {
-  return cache.store(root, url, "light", {
-    handler: "webpage",
-    kind: "article",
-    title: "Selfcheck",
-    content,
-    hasTree: false,
-  });
-}
-
-/** Rewrite an entry's fetchedAt so it reads as hoursAgo old. */
-function age(dir: string, hoursAgo: number) {
-  const metaPath = join(dir, "meta.json");
-  const meta = JSON.parse(readFileSync(metaPath, "utf8"));
-  meta.fetchedAt = new Date(Date.now() - hoursAgo * 3_600_000).toISOString();
-  writeFileSync(metaPath, JSON.stringify(meta));
+/**
+ * Reset counters, boot a fresh project scope, seed one light entry for URL (optionally aged past TTL), and serve it.
+ * Each call gets its own temp cache root, so one shared URL is fine for every test.
+ */
+async function serve(content: string, params: Record<string, unknown> = {}, ageHours = 0) {
+  accounting.reset();
+  const { root, run } = bootProjectScope();
+  const entry = cache.store(root, URL, "light", { handler: "webpage", kind: "article", title: "Selfcheck", content, hasTree: false });
+  if (ageHours > 0) {
+    const metaPath = join(entry.dir, "meta.json");
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    meta.fetchedAt = new Date(Date.now() - ageHours * 3_600_000).toISOString();
+    writeFileSync(metaPath, JSON.stringify(meta));
+  }
+  const result = await run({ url: URL, ...params });
+  return { result, text: result.content[0].text, entry };
 }
 
 test("a fresh cache hit without a topic serves the pointer, not the body", async () => {
-  accounting.reset();
-  const { root, run } = bootProjectScope();
-  const url = "https://magpi-selfcheck.invalid/fresh-no-topic";
-  const entry = seed(root, url, "alpha beta SECRET-MARKER gamma\ndocument body\n");
-
-  const result = await run({ url });
-  const text = result.content[0].text;
+  const { result, text, entry } = await serve("alpha beta SECRET-MARKER gamma\ndocument body\n");
 
   assert.equal(result.details.fromCache, true, "served from cache");
   assert.equal(result.details.stale, false, "not a stale fallback");
@@ -94,12 +89,7 @@ test("a fresh cache hit without a topic serves the pointer, not the body", async
 });
 
 test("a fresh cache hit with a topic still serves the matched sections", async () => {
-  accounting.reset();
-  const { root, run } = bootProjectScope();
-  const url = "https://magpi-selfcheck.invalid/fresh-with-topic";
-  seed(
-    root,
-    url,
+  const { text } = await serve(
     [
       "# Overview",
       "Welcome to the task runner documentation.",
@@ -107,33 +97,22 @@ test("a fresh cache hit with a topic still serves the matched sections", async (
       "# Cancelling tasks",
       "To cancel a task group, call `cancelGroup(id)` before the next tick.",
     ].join("\n"),
+    { topic: "cancel a task group" },
   );
-
-  const result = await run({ url, topic: "cancel a task group" });
-  const text = result.content[0].text;
 
   assert.ok(!text.includes("already cached (no refetch)"), "the pointer shortcut is skipped");
   assert.ok(text.includes("cancelGroup"), "the matched section answers the topic");
   assert.ok(text.includes('sections matching "cancel a task group"'), "footer names the matched sections");
   assert.ok(!text.includes("Welcome to the task runner"), "the preamble is not padding");
-  const c = accounting.snapshot();
-  assert.equal(c.hits, 1, "still counted as a fresh hit, not a fetch");
+  assert.equal(accounting.snapshot().hits, 1, "still counted as a fresh hit, not a fetch");
 });
 
 test("a stale hit (expired entry, network down) keeps the full preview", async () => {
-  accounting.reset();
-  const { root, run } = bootProjectScope();
-  const url = "https://magpi-selfcheck.invalid/stale";
-  const entry = seed(root, url, "stale body SECRET-MARKER stays visible\n");
-  age(entry.dir, 48);
-
-  const result = await run({ url });
-  const text = result.content[0].text;
+  const { result, text } = await serve("stale body SECRET-MARKER stays visible\n", {}, 48);
 
   assert.equal(result.details.fromCache, true, "served from the old entry");
   assert.equal(result.details.stale, true, "flagged stale");
   assert.ok(text.includes("STALE: network unavailable"), "footer says the network failed");
   assert.ok(text.includes("SECRET-MARKER"), "the preview is still served: the file may be the only copy");
-  const c = accounting.snapshot();
-  assert.equal(c.stale, 1, "counted as a stale serve");
+  assert.equal(accounting.snapshot().stale, 1, "counted as a stale serve");
 });
