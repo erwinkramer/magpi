@@ -93,6 +93,9 @@ const HELP = [
   "  keys     cacheScope, ttlHours, maxCacheMB, allowPrivateNetwork",
 ];
 
+/** Cache age in the shortest unit that stays accurate: minutes under an hour, hours after. */
+const ageString = (ageHours: number) => (ageHours < 1 ? `${Math.round(ageHours * 60)}m` : `${ageHours.toFixed(1)}h`);
+
 /** Suggested values for the subcommands that take a number. */
 const SUBCOMMAND_VALUES: Record<string, Completion[]> = {
   ttl: [
@@ -377,7 +380,7 @@ export default function (pi: ExtensionAPI) {
     name: "magpi_fetch",
     label: "Web Fetch",
     description:
-      "Fetch URLs with smart extraction and a persistent disk cache. Specialized handling for GitHub/GitLab (README or full clone; issues/PRs), package registries (npm, pi.dev, PyPI, crates.io, Go, RubyGems, Packagist, Hex, Maven: metadata or full package download), Wikipedia/Wikidata, Stack Overflow/Stack Exchange (Q + top answers), Reddit threads, arXiv papers, and generic webpages (readable markdown). Single url returns a preview plus the cached file path; read/grep that path for the rest instead of refetching. Pass topic to get the sections of the page that answer your question rather than its opening lines. Pass urls (array) to batch-fetch up to 5 in parallel (paths only). Falls back to a stale cached copy if the network is down.",
+      "Fetch URLs with smart extraction and a persistent disk cache. Specialized handling for GitHub/GitLab (README or full clone; issues/PRs), package registries (npm, pi.dev, PyPI, crates.io, Go, RubyGems, Packagist, Hex, Maven: metadata or full package download), Wikipedia/Wikidata, Stack Overflow/Stack Exchange (Q + top answers), Reddit threads, arXiv papers, and generic webpages (readable markdown). Single url returns a preview plus the cached file path; read/grep that path for the rest instead of refetching. Pass topic to get the sections of the page that answer your question rather than its opening lines. Pass urls (array) to batch-fetch up to 5 in parallel (paths only). Refetching an already-cached URL returns only the cache path, not the body. Falls back to a stale cached copy if the network is down.",
     promptSnippet: "Fetch any URL (webpage, repo, package, wiki) with smart extraction and disk caching",
     promptGuidelines: [
       "Use magpi_fetch whenever the user shares a URL or web content is needed; it caches to disk; read/grep the returned cache path for more detail instead of calling magpi_fetch again.",
@@ -420,6 +423,39 @@ export default function (pi: ExtensionAPI) {
       }
 
       const { entry, fromCache, stale } = await fetchToCache(targets[0], mode, params.refresh, ctx, signal, onUpdate);
+      const details = {
+        url: entry.meta.url,
+        mode,
+        handler: entry.meta.handler,
+        kind: entry.meta.kind,
+        title: entry.meta.title,
+        fetchedAt: entry.meta.fetchedAt,
+        fromCache,
+        stale,
+        contentBytes: entry.meta.contentBytes,
+        contentPath: entry.contentPath,
+        treePath: entry.treePath,
+      };
+      const filesLine = entry.treePath ? `files: ${entry.treePath} (use ls/read/grep there)` : "";
+
+      // Fresh cache hit: the body is already on disk (and usually already in context).
+      // Echoing it again costs tokens for zero information — just point at the file, without even reading it.
+      // Stale hits (network down) keep the full preview, since the file may be the only copy.
+      if (fromCache && !stale) {
+        accounting.recordWithheld(entry.meta.contentBytes);
+        const footer = [
+          "",
+          "---",
+          `magpi: ${entry.meta.kind} via ${entry.meta.handler} | cached ${ageString(entry.ageHours)} ago (${entry.meta.fetchedAt})`,
+          `already cached (no refetch) — read/grep the file below instead of refetching`,
+          `full text: ${entry.contentPath} (${formatSize(entry.meta.contentBytes)})`,
+          filesLine,
+        ]
+          .filter(Boolean)
+          .join("\n");
+        return { content: [{ type: "text", text: footer }], details };
+      }
+
       const content = readFileSync(entry.contentPath, "utf8");
       // With a topic, return the sections that answer it; without one, the head of the document.
       // A topic that matches nothing falls back to the head, so a bad guess is never worse than no guess.
@@ -433,33 +469,19 @@ export default function (pi: ExtensionAPI) {
         "---",
         `magpi: ${entry.meta.kind} via ${entry.meta.handler}` +
           (fromCache
-            ? ` | cached ${entry.ageHours < 1 ? `${Math.round(entry.ageHours * 60)}m` : `${entry.ageHours.toFixed(1)}h`} ago (${entry.meta.fetchedAt})${stale ? " | STALE: network unavailable, serving old copy" : ""}`
+            ? ` | cached ${ageString(entry.ageHours)} ago (${entry.meta.fetchedAt})${stale ? " | STALE: network unavailable, serving old copy" : ""}`
             : ` | fetched ${entry.meta.fetchedAt}`),
         topical ? `sections matching "${params.topic}": ${topical.headings.join(" | ")}` : "",
         `full text: ${entry.contentPath} (${formatSize(entry.meta.contentBytes)})` +
           (topical || head!.truncated ? " (partial view above; read the file for the rest)" : ""),
-        entry.treePath ? `files: ${entry.treePath} (use ls/read/grep there)` : "",
+        filesLine,
       ]
         .filter(Boolean)
         .join("\n");
 
       return {
         content: [{ type: "text", text: preview + footer }],
-        details: {
-          url: entry.meta.url,
-          mode,
-          handler: entry.meta.handler,
-          kind: entry.meta.kind,
-          title: entry.meta.title,
-          fetchedAt: entry.meta.fetchedAt,
-          topic: params.topic,
-          sections: topical?.headings,
-          fromCache,
-          stale,
-          contentBytes: entry.meta.contentBytes,
-          contentPath: entry.contentPath,
-          treePath: entry.treePath,
-        },
+        details: { ...details, topic: params.topic, sections: topical?.headings },
       };
     },
     // Display-only (never touches session content or LLM context): a calm one-liner collapsed, full preview on expand.
@@ -550,10 +572,9 @@ export default function (pi: ExtensionAPI) {
         };
       }
       const MAX = 50;
-      const lines = entries.slice(0, MAX).map(({ scope, e }) => {
-        const age = e.ageHours < 1 ? `${Math.round(e.ageHours * 60)}m` : `${e.ageHours.toFixed(1)}h`;
-        return `${scope} ${age.padStart(6)}  ${e.meta.kind.padEnd(12)} ${e.meta.url}\n          -> ${e.contentPath}${e.treePath ? `\n          -> ${e.treePath} (files)` : ""}`;
-      });
+      const lines = entries.slice(0, MAX).map(({ scope, e }) =>
+        `${scope} ${ageString(e.ageHours).padStart(6)}  ${e.meta.kind.padEnd(12)} ${e.meta.url}\n          -> ${e.contentPath}${e.treePath ? `\n          -> ${e.treePath} (files)` : ""}`,
+      );
       if (entries.length > MAX) lines.push(`... and ${entries.length - MAX} more (use filter to narrow)`);
       lines.push(`\nG = global cache (${roots[0][1]}), L = project-local cache (${roots[1][1]}): both grep/ls-able, host-grouped`);
       return {
