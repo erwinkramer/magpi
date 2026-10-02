@@ -440,8 +440,9 @@ export default function (pi: ExtensionAPI) {
 
       // Fresh cache hit: the body is already on disk (and usually already in context).
       // Echoing it again costs tokens for zero information — just point at the file, without even reading it.
+      // A topic is an explicit ask for content, so it still earns the matched sections.
       // Stale hits (network down) keep the full preview, since the file may be the only copy.
-      if (fromCache && !stale) {
+      if (fromCache && !stale && !params.topic) {
         accounting.recordWithheld(entry.meta.contentBytes);
         const footer = [
           "",
