@@ -71,12 +71,45 @@ export interface TopicMatch {
 }
 
 /**
+ * List-shaped documents (llms.txt indexes, changelogs): every entry sits under one heading, so section mode would return the whole list for any topic. Rank the list lines themselves instead.
+ * Returns undefined when the document is not list-shaped or nothing matches, so the caller falls through to section mode.
+ */
+function matchLines(markdown: string, wanted: string[], budget: number): TopicMatch | undefined {
+  const nonEmpty = markdown.split("\n").filter((l) => l.trim());
+  const items = nonEmpty.filter((l) => l.trimStart().startsWith("- "));
+  // Real llms.txt files are often just a short preamble and three links; the majority rule, not the count, is what separates an index from prose.
+  if (items.length < 3 || items.length < nonEmpty.length / 2) return undefined;
+
+  const ranked = items
+    .map((line) => ({ line, points: score(line, wanted) }))
+    .filter((l) => l.points > 0)
+    .sort((a, b) => b.points - a.points);
+  if (ranked.length === 0) return undefined;
+
+  const floor = ranked[0].points * RELEVANCE_FLOOR;
+  const picked: string[] = [];
+  let used = 0;
+  for (const l of ranked.filter((r) => r.points >= floor)) {
+    if (picked.length > 0 && used + l.line.length > budget) continue;
+    picked.push(l.line);
+    used += l.line.length;
+  }
+  return {
+    content: picked.join("\n"),
+    headings: picked.map((l) => l.replace(/^\s*-\s*/, "").replace(/\s+/g, " ").slice(0, 80)),
+  };
+}
+
+/**
  * Best-scoring sections that fit the budget, highest first.
  * Returns undefined when the topic is empty or nothing matches, which is the caller's signal to fall back to the head of the document: a bad topic must never return less than no topic at all.
  */
 export function matchTopic(markdown: string, topic: string, budget: number): TopicMatch | undefined {
   const wanted = terms(topic);
   if (wanted.length === 0) return undefined;
+
+  const lineMode = matchLines(markdown, wanted, budget);
+  if (lineMode) return lineMode;
 
   const ranked = splitSections(markdown)
     .map((body) => ({ body, points: score(body, wanted) }))
