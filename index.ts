@@ -380,7 +380,7 @@ export default function (pi: ExtensionAPI) {
     name: "magpi_fetch",
     label: "Web Fetch",
     description:
-      "Fetch URLs with smart extraction and a persistent disk cache. Specialized handling for GitHub/GitLab (README or full clone; issues/PRs), package registries (npm, pi.dev, PyPI, crates.io, Go, RubyGems, Packagist, Hex, Maven: metadata or full package download), Wikipedia/Wikidata, Stack Overflow/Stack Exchange (Q + top answers), Reddit threads, arXiv papers, and generic webpages (readable markdown). Single url returns a preview plus the cached file path; read/grep that path for the rest instead of refetching. Pass topic to get the sections of the page that answer your question rather than its opening lines. Pass urls (array) to batch-fetch up to 5 in parallel (paths only). Falls back to a stale cached copy if the network is down.",
+      "Fetch and cache webpages, repositories, packages, and papers. Provide url or urls; only the first 5 distinct targets are fetched. One target returns a preview and local paths; multiple targets return paths only. Read/grep the files for remaining content; use refresh=true when freshness matters. Cache persists across sessions; failed fetches can return stale content.",
     promptSnippet: "Fetch any URL (webpage, repo, package, wiki) with smart extraction and disk caching",
     promptGuidelines: [
       "Use magpi_fetch whenever the user shares a URL or web content is needed; it caches to disk; read/grep the returned cache path for more detail instead of calling magpi_fetch again.",
@@ -388,19 +388,19 @@ export default function (pi: ExtensionAPI) {
       "Use magpi_fetch with mode 'full' for repo clones, package downloads, or full arXiv paper text from an /abs/ URL. arXiv /html/ and /pdf/ URLs return paper text in light mode too.",
     ],
     parameters: Type.Object({
-      url: Type.Optional(Type.String({ description: "URL to fetch (scheme optional, https assumed)" })),
+      url: Type.Optional(Type.String({ description: "URL to fetch (scheme optional; HTTPS assumed). Provide url or urls." })),
       urls: Type.Optional(
-        Type.Array(Type.String(), { description: "Batch mode: fetch up to 5 URLs in parallel; returns cache paths only" }),
+        Type.Array(Type.String(), { description: "URLs to fetch in parallel. The first 5 distinct targets across url and urls are used." }),
       ),
       mode: Type.Optional(
         StringEnum(["light", "full"] as const, {
-          description: "light (default): readme/extract/metadata; arXiv /html/ and /pdf/ return paper text. full: clone repo, download+extract package, or full arXiv paper text.",
+          description: "light (default): extracted text or metadata; arXiv /abs/ returns an abstract, /html/ and /pdf/ return paper text. full: clone repositories, extract packages, or fetch the PDF for arXiv /abs/.",
         }),
       ),
       topic: Type.Optional(
         Type.String({
           description:
-            "What you need from the page, in a few words (e.g. 'cancel a task group'). Returns the matching sections instead of the top of the document. Derive it from the question you are answering; never ask the user for keywords. Falls back to the top of the document when nothing matches.",
+            "For a single target, use a few terms from the user's question (e.g. 'task cancellation') to select matching sections. Returns the document start if nothing matches. Ignored for multiple targets.",
         }),
       ),
       refresh: Type.Optional(Type.Boolean({ description: "Bypass the cache and refetch" })),
@@ -506,14 +506,14 @@ export default function (pi: ExtensionAPI) {
     name: "magpi_cached",
     label: "Cached Web Content",
     description:
-      "List or full-text search web content already cached on disk by magpi_fetch (persists across sessions). Without arguments, lists entries: URL, kind, age, local file path; read/grep those paths directly instead of refetching. With query, runs ranked full-text search over all cached content and returns snippets plus paths, answering 'did we ever fetch anything about X?'. filter narrows the listing by substring match on URL or kind.",
+      "List or search cached content across sessions, including webpages, repositories, packages, and papers. Listing returns URL, kind, age, and local paths, newest first. query returns ranked titles, URLs, snippets, and paths. Use filter for URL/kind substring listing; it does not narrow full-text query results. Read/grep returned paths for full content.",
     promptSnippet: "List or full-text search locally cached web content (URLs -> file paths)",
     promptGuidelines: [
       "Use magpi_cached to check what web content is already cached before fetching or searching; cached entries persist across sessions and can be read/grepped directly at their paths. Pass query to full-text search cached content by topic.",
     ],
     parameters: Type.Object({
-      query: Type.Optional(Type.String({ description: "Full-text search over cached content; returns ranked snippets + paths" })),
-      filter: Type.Optional(Type.String({ description: "Substring to match against URL or kind (e.g. a domain) when listing" })),
+      query: Type.Optional(Type.String({ description: "Full-text query over cached content; returns ranked titles, URLs, snippets, and paths. If full-text search is unavailable, falls back to URL/kind substring listing." })),
+      filter: Type.Optional(Type.String({ description: "URL or kind substring for listing (e.g. a domain). Ignored during full-text search." })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const roots: Array<[string, string]> = [
@@ -578,7 +578,7 @@ export default function (pi: ExtensionAPI) {
     name: "magpi_search",
     label: "Web Search",
     description:
-      "Best-effort web search with no API keys: DuckDuckGo Lite, Wikipedia, HN Algolia, and Context7 (all rate-limited free endpoints). Returns titles, URLs and snippets; follow up with magpi_fetch on promising URLs. Set source to 'context7' to search library and framework documentation by name, which beats a general web search for API questions. If every source fails, ask the user to run the search and paste results.",
+      "Search DuckDuckGo Lite, Wikipedia, HN Algolia, or Context7. Returns titles, URLs, and snippets; fetch result URLs for content. Use source='context7' with a library name for documentation. If no results are returned, ask the user to search and paste results.",
     promptSnippet: "Best-effort web search (DDG Lite, Wikipedia, HN, Context7 docs), no API keys",
     promptGuidelines: [
       "Use magpi_search for lookups instead of saying you cannot search; then magpi_fetch the promising URLs. If magpi_search fails or returns nothing useful, ask the user to search and paste results; do not silently fall back to memory.",
@@ -588,14 +588,14 @@ export default function (pi: ExtensionAPI) {
       source: Type.Optional(
         StringEnum(["auto", "ddg", "wikipedia", "hn", "context7"] as const, {
           description:
-            "auto (default) tries ddg, then wikipedia, then hn, then context7. context7 searches library documentation by name; pick it directly for API and framework questions.",
+            "auto (default): try ddg, wikipedia, hn, then context7; stop at the first source with results. An explicit source searches only that source. For context7, use a library name as query.",
         }),
       ),
       fetch_top: Type.Optional(
         Type.Integer({
           minimum: 1,
           maximum: 5,
-          description: "Also fetch the top N result URLs into the cache and return their paths (saves round-trips)",
+          description: "Fetch up to N result URLs in light mode and return cache paths. Omit for search results only.",
         }),
       ),
     }),
