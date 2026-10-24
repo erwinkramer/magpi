@@ -73,15 +73,31 @@ export interface TopicMatch {
 /**
  * List-shaped documents (llms.txt indexes, changelogs): every entry sits under one heading, so section mode would return the whole list for any topic. Rank the list lines themselves instead.
  * Returns undefined when the document is not list-shaped or nothing matches, so the caller falls through to section mode.
+ * The top score rides along so the caller can check line mode against the sections: a nav bullet in a mixed doc must not beat the prose section that answers.
  */
-function matchLines(markdown: string, wanted: string[], budget: number): TopicMatch | undefined {
-  const nonEmpty = markdown.split("\n").filter((l) => l.trim());
-  const items = nonEmpty.filter((l) => l.trimStart().startsWith("- "));
-  // Real llms.txt files are often just a short preamble and three links; the majority rule, not the count, is what separates an index from prose.
-  if (items.length < 3 || items.length < nonEmpty.length / 2) return undefined;
+function matchLines(markdown: string, wanted: string[], budget: number): (TopicMatch & { top: number }) | undefined {
+  // Fenced code is never navigation: its dash lines must not count as entries nor be returned.
+  const outside: string[] = [];
+  let fenced = false;
+  for (const l of markdown.split("\n")) {
+    if (/^\s*(```|~~~)/.test(l)) { fenced = !fenced; continue; }
+    if (!fenced) outside.push(l);
+  }
 
-  const ranked = items
-    .map((line) => ({ line, points: score(line, wanted) }))
+  // An entry is a top-level bullet plus the lines that belong to it: nested bullets and continuation text up to the next top-level bullet or heading. Returning flat lines would lose that structure.
+  const entries: string[] = [];
+  let open: number | null = null;
+  for (const l of outside.filter((l) => l.trim())) {
+    if (/^- /.test(l)) { entries.push(l); open = entries.length - 1; continue; }
+    if (/^#{1,6} /.test(l)) { open = null; continue; } // A heading ends the list, not an entry.
+    if (open !== null) entries[open] += "\n" + l;
+  }
+  const nonEmptyCount = outside.filter((l) => l.trim()).length;
+  // Real llms.txt files are often just a short preamble and three links; the majority rule, not the count, is what separates an index from prose.
+  if (entries.length < 3 || entries.length < nonEmptyCount / 2) return undefined;
+
+  const ranked = entries
+    .map((entry) => ({ entry, points: score(entry, wanted) }))
     .filter((l) => l.points > 0)
     .sort((a, b) => b.points - a.points);
   if (ranked.length === 0) return undefined;
@@ -90,13 +106,22 @@ function matchLines(markdown: string, wanted: string[], budget: number): TopicMa
   const picked: string[] = [];
   let used = 0;
   for (const l of ranked.filter((r) => r.points >= floor)) {
-    if (picked.length > 0 && used + l.line.length > budget) continue;
-    picked.push(l.line);
-    used += l.line.length;
+    if (picked.length === 0) {
+      // The top entry always goes in, truncated if it alone overruns the budget.
+      const entry = l.entry.length > budget ? l.entry.slice(0, budget) : l.entry;
+      picked.push(entry);
+      used = entry.length;
+    } else if (used + 1 + l.entry.length <= budget) {
+      // The joining newline is part of the output, so it counts against the budget too.
+      picked.push(l.entry);
+      used += 1 + l.entry.length;
+    }
+    if (used >= budget) break;
   }
   return {
     content: picked.join("\n"),
-    headings: picked.map((l) => l.replace(/^\s*-\s*/, "").replace(/\s+/g, " ").slice(0, 80)),
+    headings: picked.map((e) => e.split("\n")[0].replace(/^\s*-\s*/, "").replace(/\s+/g, " ").slice(0, 80)),
+    top: ranked[0].points,
   };
 }
 
@@ -108,13 +133,20 @@ export function matchTopic(markdown: string, topic: string, budget: number): Top
   const wanted = terms(topic);
   if (wanted.length === 0) return undefined;
 
-  const lineMode = matchLines(markdown, wanted, budget);
-  if (lineMode) return lineMode;
-
   const ranked = splitSections(markdown)
     .map((body) => ({ body, points: score(body, wanted) }))
     .filter((s) => s.points > 0)
     .sort((a, b) => b.points - a.points);
+
+  const lineMode = matchLines(markdown, wanted, budget);
+  if (lineMode) {
+    // In a pure index every line is a heading of one, so its top line always outscores the flat section it sits in; in a mixed doc the prose section that answers does, so line mode only wins on a strict lead.
+    const sectionTop = ranked.length > 0 ? ranked[0].points : 0;
+    if (lineMode.top > sectionTop) {
+      const { top: _top, ...match } = lineMode;
+      return match;
+    }
+  }
   if (ranked.length === 0) return undefined;
 
   // Budget alone would pad the answer with whatever happens to fit; a weak match is worse than nothing, because it displaces the file path advice.
