@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { paperId, paperPdfId } from "../src/handlers/arxiv.js";
+import { arxivHandler, paperId, paperPdfId } from "../src/handlers/arxiv.js";
 import { assertPublicTarget, isPrivateIp, withDeadline } from "../src/handlers/handler.js";
 import { REGISTRIES } from "../src/handlers/registries/index.js";
 import { registerHandler, resolveHandler } from "../src/handlers/registry.js";
@@ -76,6 +76,30 @@ test("arxiv ids survive every url form", () => {
   ];
   for (const [pathname, id] of cases) assert.equal(paperId(pathname), id, pathname);
   assert.equal(paperPdfId("/pdf/2301.00001v2.pdf"), "2301.00001v2");
+});
+
+test("arxiv HTML URLs extract the paper in either mode and surface fetch failures", async (t) => {
+  const url = new URL("https://arxiv.org/html/2401.12345v2");
+  const html = `<html><head><title>Test paper</title></head><body><article>
+    <h1>Test paper</h1><h2>Abstract</h2><p>A short summary.</p>
+    <h2>Methods</h2><p>${"Detailed methodology for the full paper. ".repeat(30)}</p>
+    <h2>References</h2><p>A cited work.</p></article></body></html>`;
+  const fetchMock = t.mock.method(globalThis, "fetch", async (input: Parameters<typeof fetch>[0]) => {
+    assert.equal(String(input), url.href, "fetch the versioned HTML URL, not metadata or a PDF");
+    return new Response(html, { headers: { "content-type": "text/html" } });
+  });
+  const ctx = { entryDir: "", exec: async () => ({ stdout: "", stderr: "", code: 0 }) };
+  for (const mode of ["light", "full"] as const) {
+    const paper = await arxivHandler.fetch(url, { ...ctx, mode });
+    assert.equal(paper.kind, "paper");
+    assert.match(paper.content, /Detailed methodology/);
+    assert.match(paper.content, /References/);
+    assert.doesNotMatch(paper.content, /<html/);
+  }
+  assert.equal(fetchMock.mock.callCount(), 2);
+  fetchMock.mock.mockImplementation(async () => new Response("Unavailable", { status: 404 }));
+  await assert.rejects(arxivHandler.fetch(url, { ...ctx, mode: "light" }), /HTTP 404/);
+  assert.equal(fetchMock.mock.callCount(), 3, "a missing paper must not fall back to an abstract");
 });
 
 test("withDeadline gives up on work that ignores its signal", async () => {

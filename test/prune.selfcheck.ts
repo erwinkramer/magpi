@@ -30,14 +30,18 @@ test("elideFetchPreviews keeps recent previews, elides old ones", () => {
   assert.equal((messages[0] as any).content, "hi", "non-fetch messages untouched");
 });
 
-test("elideFetchPreviews ignores other tools and pathless results", () => {
+test("elideFetchPreviews ignores other tools and malformed details", () => {
   const other = { role: "toolResult", toolName: "read", content: [{ type: "text", text: "file body" }] };
-  const pathless = { role: "toolResult", toolName: "magpi_fetch", content: [{ type: "text", text: "err" }], details: {} };
-  const messages = [other, pathless, fetchResult("/cache/x.md"), fetchResult("/cache/y.md"), fetchResult("/cache/z.md")];
-  elideFetchPreviews(messages as never[], 2, 0);
-  assert.equal((other.content[0] as any).text, "file body");
-  assert.equal((pathless.content[0] as any).text, "err");
-  assert.match((messages[2] as any).content[0].text, /elided/);
+  const invalid = [undefined, null, 42, "path", {}, { contentPath: 42 }, { contentPath: "" },
+    { contentPath: "/cache/bad.md", treePath: 42 }].map((details) => ({
+      role: "toolResult", toolName: "magpi_fetch", content: [{ type: "text", text: "err" }], details,
+    }));
+  const eligible = fetchResult("/cache/x.md");
+  const messages = [other, ...invalid, eligible, fetchResult("/cache/y.md"), fetchResult("/cache/z.md")];
+  elideFetchPreviews(messages, 2, 0);
+  assert.equal(other.content[0].text, "file body");
+  for (const m of invalid) assert.equal(m.content[0].text, "err");
+  assert.match(eligible.content[0].text, /elided/);
 });
 
 test("elision fires on the reclaimed share, not an absolute size", () => {

@@ -50,7 +50,7 @@ const DNS_TIMEOUT_MS = 5_000;
  * The per-request timeout above bounds a single call, not a handler that makes several in a row, and nothing at all bounds a dns lookup, a clone, or pdf text extraction.
  * Full mode gets the looser figure because it clones repos and unpacks archives.
  */
-export const FETCH_DEADLINE_MS: Record<FetchMode, number> = { light: 90_000, full: 300_000 };
+export const FETCH_DEADLINE_MS = { light: 90_000, full: 300_000 } satisfies Record<FetchMode, number>;
 
 export class FetchError extends Error {
   constructor(
@@ -250,7 +250,8 @@ export async function cloneRepo(cloneUrl: string, ctx: FetchContext): Promise<Ha
 
 async function pdfToText(buf: ArrayBuffer): Promise<string> {
   // unpdf 1.8's bundled PDF.js calls this ES2026 API despite declaring Node >=22.
-  (Math as any).sumPrecise ??= (values: Iterable<number>) => Array.from(values).reduce((sum, n) => sum + n, 0);
+  const sumPrecise = (values: Iterable<number>) => Array.from(values).reduce((sum, n) => sum + n, 0);
+  (Math as typeof Math & { sumPrecise?: typeof sumPrecise }).sumPrecise ??= sumPrecise;
   const { extractText, getDocumentProxy } = await import("unpdf");
   const { text, totalPages } = await extractText(await getDocumentProxy(new Uint8Array(buf)), { mergePages: true });
   return `${text.trim()}\n\n(${totalPages} pages)`;
@@ -262,7 +263,9 @@ async function pdfToText(buf: ArrayBuffer): Promise<string> {
  * Every handler is built on this via defineHandler; specialized handlers override fetch but reuse the same http/extract helpers, so the tested plumbing is shared.
  */
 export const defaultFetch = async (url: URL, ctx: FetchContext): Promise<HandlerResult> => {
-  const probes = ctx.mode === "full" ? ["llms-full.txt", "llms.txt"] : url.pathname === "/" ? ["llms.txt"] : [];
+  let probes: string[] = [];
+  if (ctx.mode === "full") probes = ["llms-full.txt", "llms.txt"];
+  else if (url.pathname === "/") probes = ["llms.txt"];
   for (const name of probes) {
     try {
       const r = await getText(`${url.origin}/${name}`, ctx.signal);
@@ -306,5 +309,5 @@ export function defineHandler(def: {
   if (!def.name || typeof def.match !== "function") {
     throw new Error("magpi handler needs at least { name, match }");
   }
-  return { description: "", fetch: defaultFetch, ...def };
+  return { fetch: defaultFetch, ...def };
 }

@@ -4,7 +4,7 @@ export interface MessageLike {
   role: string;
   toolName?: string;
   content?: unknown;
-  details?: { contentPath?: string; treePath?: string };
+  details?: unknown;
 }
 
 export interface ProjectedEntryLike {
@@ -40,12 +40,18 @@ export function resetElisionState(): void {
   committed.clear();
 }
 
-function isFetchResult(m: MessageLike): boolean {
-  return m.role === "toolResult" && m.toolName === "magpi_fetch" && !!m.details?.contentPath;
+type FetchResult = MessageLike & { details: { contentPath: string; treePath?: string } };
+
+function isFetchResult(m: MessageLike): m is FetchResult {
+  if (m.role !== "toolResult" || m.toolName !== "magpi_fetch") return false;
+  const d = m.details;
+  return typeof d === "object" && d !== null &&
+    "contentPath" in d && typeof d.contentPath === "string" && d.contentPath.length > 0 &&
+    (!("treePath" in d) || d.treePath === undefined || typeof d.treePath === "string");
 }
 
-function isElided(m: MessageLike): boolean {
-  if (committed.has(m.details?.contentPath ?? "")) return true;
+function isElided(m: FetchResult): boolean {
+  if (committed.has(m.details.contentPath)) return true;
   if (typeof m.content === "string") return m.content.startsWith("(magpi: preview elided");
   if (Array.isArray(m.content) && m.content[0] && typeof (m.content[0] as { text?: unknown }).text === "string") {
     return ((m.content[0] as { text: string }).text).startsWith("(magpi: preview elided");
@@ -94,7 +100,7 @@ export function findElisionDrafts(
   ratio = ELIDE_RATIO,
 ): ContextEditDraft[] {
   const allMessages: MessageLike[] = [];
-  const fetchEntries: Array<{ entryId: string; message: MessageLike }> = [];
+  const fetchEntries: Array<{ entryId: string; message: FetchResult }> = [];
 
   for (const entry of entries) {
     for (const m of entry.messages) {
@@ -118,8 +124,8 @@ export function findElisionDrafts(
 
   const drafts: ContextEditDraft[] = [];
   for (const { entryId, message } of fresh) {
-    const d = message.details!;
-    committed.add(d.contentPath!);
+    const d = message.details;
+    committed.add(d.contentPath);
     recordElided(previewChars(message));
     drafts.push({
       type: "context_edit",
@@ -128,7 +134,7 @@ export function findElisionDrafts(
         content: [
           {
             type: "text",
-            text: elisionNotice(d.contentPath!, d.treePath),
+            text: elisionNotice(d.contentPath, d.treePath),
           },
         ],
       },
@@ -157,20 +163,20 @@ export function elideFetchPreviews<T extends MessageLike>(
   const drafts = findElisionDrafts(syntheticEntries, keepRecent, ratio);
   for (const draft of drafts) {
     const idx = Number(draft.targetId);
-    messages[idx].content = draft.replacement.content as never;
+    messages[idx].content = draft.replacement.content;
   }
 
-  const fetches = messages.filter(isFetchResult);
+  const fetches = messages.filter((m): m is T & FetchResult => isFetchResult(m));
   const eligible = fetches.slice(0, Math.max(0, fetches.length - keepRecent));
   for (const m of eligible) {
-    if (!committed.has(m.details!.contentPath!)) continue;
-    const d = m.details!;
+    if (!committed.has(m.details.contentPath)) continue;
+    const d = m.details;
     m.content = [
       {
         type: "text",
-        text: elisionNotice(d.contentPath!, d.treePath),
+        text: elisionNotice(d.contentPath, d.treePath),
       },
-    ] as never;
+    ];
   }
   return messages;
 }

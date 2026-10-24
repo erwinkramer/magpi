@@ -39,7 +39,7 @@ Throw a URL at it. The first handler that matches wins, and each one knows the s
 | `stackexchange` | Stack Overflow, Superuser, *.stackexchange.com | question + top answers | - |
 | `reddit` | reddit.com threads | post + top comments | - |
 | `hackernews` | news.ycombinator.com items | story + top comments | - |
-| `arxiv` | arxiv.org/abs, /pdf, /html | title, authors, abstract; the abstract page when the export API is down | - |
+| `arxiv` | arxiv.org/abs, /pdf, /html | /abs: title, authors, abstract (abstract page if the API is down); /html and /pdf: paper text | paper text (/html stays HTML; /abs and /pdf use PDF) |
 | `webpage` | everything else | readable markdown; PDFs as text; a site's `llms.txt` when published | site docs via `llms-full.txt`, if published |
 
 `full` mode puts files under the cache entry's `tree/` directory. Point pi's `ls`/`read`/`grep` at it. `urls: [...]` batch-fetches up to 5 in parallel. A pi.dev package page goes to npm for its metadata, since the catalog is npm's `pi-package` keyword slice and the registry copy skips the rendered page.

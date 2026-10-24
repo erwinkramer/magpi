@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolUpdateCallback, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   CONFIG_DIR_NAME,
   formatSize,
@@ -94,7 +94,7 @@ const HELP = [
 ];
 
 /** Suggested values for the subcommands that take a number. */
-const SUBCOMMAND_VALUES: Record<string, Completion[]> = {
+const SUBCOMMAND_VALUES = {
   ttl: [
     { value: "1", description: "1 hour, for pages that move" },
     { value: "24", description: "1 day, the default" },
@@ -107,7 +107,7 @@ const SUBCOMMAND_VALUES: Record<string, Completion[]> = {
     { value: "500", description: "500 MB" },
     { value: "2000", description: "2 GB" },
   ],
-};
+} satisfies Record<string, Completion[]>;
 
 const toItems = (rows: Completion[], prefix = "") =>
   rows.map((r) => {
@@ -125,7 +125,9 @@ export function completeCommand(argumentPrefix: string) {
   const [head, ...rest] = typed.split(/\s+/);
 
   // Past the first word of a numeric subcommand, suggest values for it.
-  const values = SUBCOMMAND_VALUES[head];
+  const values = Object.hasOwn(SUBCOMMAND_VALUES, head)
+    ? SUBCOMMAND_VALUES[head as keyof typeof SUBCOMMAND_VALUES]
+    : undefined;
   if (values && (rest.length > 0 || /\s$/.test(typed))) {
     const items = toItems(
       values.filter((v) => v.value.startsWith(rest.join(" "))),
@@ -141,11 +143,8 @@ export function completeCommand(argumentPrefix: string) {
 export default function (pi: ExtensionAPI) {
   setConfigDirName(CONFIG_DIR_NAME);
 
+  // WHY: register directly so each pi.on overload supplies its event type; the wrapper inferred only input.
   const unsubs: Array<() => void> = [];
-  const listen = <E extends Parameters<typeof pi.on>[0]>(event: E, handler: Parameters<typeof pi.on>[1]) => {
-    const unsub = pi.on(event, handler as any);
-    if (typeof unsub === "function") unsubs.push(unsub);
-  };
 
   // URLs fetched this session; forwarded as cache hints across compactions.
   const sessionFetches = new Map<string, { url: string; contentPath: string; treePath?: string }>();
@@ -183,7 +182,7 @@ export default function (pi: ExtensionAPI) {
     return [writeRoot, writeRoot === globalCacheRoot() ? projectCacheRoot(cwd) : globalCacheRoot()];
   };
 
-  listen("session_start", (_event, ctx) => {
+  unsubs.push(pi.on("session_start", (_event, ctx) => {
     accounting.reset();
     sessionFetches.clear();
     const trusted = ctx.isProjectTrusted();
@@ -194,17 +193,17 @@ export default function (pi: ExtensionAPI) {
       if (cache.heal(root) === "rebuilt" && ctx.hasUI) ctx.ui.notify(`🐦 magpi: search index rebuilt for ${root}`, "info");
     }
     updateStatus(ctx);
-  });
+  }));
 
-  listen("session_shutdown", () => {
+  unsubs.push(pi.on("session_shutdown", () => {
     cachedb.closeAll();
     for (const unsub of unsubs) unsub();
     unsubs.length = 0;
-  });
+  }));
 
   // Keep cache paths alive through compaction: when compaction discards earlier conversation turns,
   // tell the model where all URLs fetched this session live on disk so it can read them without refetching.
-  listen("session_compact", () => {
+  unsubs.push(pi.on("session_compact", () => {
     if (sessionFetches.size === 0) return;
     const lines = [...sessionFetches.values()].map(
       (f) => `${f.url} -> ${f.contentPath}${f.treePath ? ` (+ files: ${f.treePath})` : ""}`,
@@ -217,23 +216,22 @@ export default function (pi: ExtensionAPI) {
       },
       { deliverAs: "nextTurn" },
     );
-  });
+  }));
 
   // Context thrift: old magpi_fetch previews are dead weight; the full text is on disk.
   // At each turn boundary, generate append-only ContextEditEntry drafts to replace aged previews with cache paths.
   // Pi commits them canonically: survives restart/branch navigation and preserves prompt cache across turns.
-  listen("turn_end", (event, ctx) => {
-    const projection = ctx.sessionManager?.buildSessionProjection();
-    if (!projection) return;
-    const drafts = findElisionDrafts(projection.entries as never[]);
+  unsubs.push(pi.on("turn_end", (event, ctx) => {
+    const projection = ctx.sessionManager.buildSessionProjection();
+    const drafts = findElisionDrafts(projection.entries);
     if (drafts.length === 0) return;
     return {
-      entries: [...((event as any).entries ?? []), ...drafts],
+      entries: [...event.entries, ...drafts],
     };
-  });
+  }));
 
   // If the user's prompt contains URLs that are already cached and fresh, tell the model where they live; it skips the fetch round-trip entirely.
-  listen("before_agent_start", (event, ctx) => {
+  unsubs.push(pi.on("before_agent_start", (event, ctx) => {
     // Dynamic search-tool self-demotion: if another search tool is active, demote magpi_search
     // via diffed prompt guidelines so the prompt cache prefix is preserved.
     const active = new Set(pi.getActiveTools());
@@ -241,13 +239,14 @@ export default function (pi: ExtensionAPI) {
       .getAllTools()
       .filter((t) => t.name !== "" && t.name !== "magpi_search" && /search/i.test(t.name) && active.has(t.name))
       .map((t) => t.name);
-    if (competitors.length > 0 && event.systemPromptOptions?.toolGuidelines) {
+    if (competitors.length > 0) {
       const rivals = competitors.join(", ");
       event.systemPromptOptions.toolGuidelines["magpi_search"] = [
         `Prefer ${rivals} for web searches; use magpi_search only if ${rivals} fails or is unavailable. Either way, magpi_fetch the promising URLs. If all search fails, ask the user to search and paste results; do not silently fall back to memory.`,
       ];
     }
 
+    if (event.messageType !== "user") return;
     const urls = [...new Set(event.prompt.match(/https?:\/\/[^\s)\]}>"']+/g) ?? [])].slice(0, 8);
     if (urls.length === 0) return;
     const cfg = loadConfig(ctx.cwd, ctx.isProjectTrusted());
@@ -271,7 +270,7 @@ export default function (pi: ExtensionAPI) {
         display: false,
       },
     };
-  });
+  }));
 
   // Other extensions extend MagPi over pi's shared event bus:
   //   pi.events.emit("magpi:register-handler", defineHandler({...}))
@@ -280,7 +279,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   /** Concurrent callers asking for one URL and mode share a single fetch. */
-  async function fetchToCache(...args: Parameters<typeof fetchOnce>) {
+  function fetchToCache(...args: Parameters<typeof fetchOnce>) {
     const [rawUrl, mode, refresh] = args;
     // Refresh keys separately, so a refresh never joins a call that is allowed to answer from cache.
     const key = `${mode}:${refresh ? "refresh:" : ""}${cache.canonicalize(normalizeUrl(rawUrl))}`;
@@ -293,10 +292,10 @@ export default function (pi: ExtensionAPI) {
     refresh: boolean | undefined,
     ctx: StatusCtx,
     signal?: AbortSignal,
-    onUpdate?: (partial: { content: Array<{ type: "text"; text: string }> }) => void,
+    onUpdate?: AgentToolUpdateCallback,
   ) {
     // Canonical form (no fragments/tracking params, sorted query) is both the cache key and the URL fetched, so variants of one page share an entry.
-    const url = new URL(cache.canonicalize(normalizeUrl(rawUrl)));
+    const url = normalizeUrl(cache.canonicalize(normalizeUrl(rawUrl)));
     const cfg = loadConfig(ctx.cwd, ctx.isProjectTrusted());
     const roots = bothRoots(ctx.cwd, cfg);
 
@@ -309,7 +308,7 @@ export default function (pi: ExtensionAPI) {
       fromCache = false;
       if (!cfg.allowPrivateNetwork) await assertPublicTarget(url);
       const handler = resolveHandler(url);
-      onUpdate?.({ content: [{ type: "text", text: `Fetching via ${handler.name}...` }] });
+      onUpdate?.({ content: [{ type: "text", text: `Fetching via ${handler.name}...` }], details: undefined });
       try {
         const entryDir = cache.entryDir(roots[0], url.href);
         // One deadline over the handler, however many calls it makes inside.
@@ -351,7 +350,7 @@ export default function (pi: ExtensionAPI) {
     refresh: boolean | undefined,
     ctx: StatusCtx,
     signal?: AbortSignal,
-    onUpdate?: (partial: { content: Array<{ type: "text"; text: string }> }) => void,
+    onUpdate?: AgentToolUpdateCallback,
   ) {
     let done = 0;
     const settled = await Promise.allSettled(
@@ -362,7 +361,7 @@ export default function (pi: ExtensionAPI) {
           accounting.recordWithheld(r.entry.meta.contentBytes);
           return r;
         } finally {
-          onUpdate?.({ content: [{ type: "text", text: `fetched ${++done}/${targets.length}` }] });
+          onUpdate?.({ content: [{ type: "text", text: `fetched ${++done}/${targets.length}` }], details: undefined });
         }
       }),
     );
@@ -373,6 +372,10 @@ export default function (pi: ExtensionAPI) {
     );
   }
 
+  type CachedFetch = Awaited<ReturnType<typeof fetchToCache>>;
+  type FetchDetails = { batch: Awaited<ReturnType<typeof fetchMany>> } |
+    (Pick<CachedFetch, "fromCache" | "stale"> & Pick<CachedFetch["entry"]["meta"], "kind" | "handler" | "contentBytes">);
+
   pi.registerTool({
     name: "magpi_fetch",
     label: "Web Fetch",
@@ -382,7 +385,7 @@ export default function (pi: ExtensionAPI) {
     promptGuidelines: [
       "Use magpi_fetch whenever the user shares a URL or web content is needed; it caches to disk; read/grep the returned cache path for more detail instead of calling magpi_fetch again.",
       "Whenever you are fetching a page to answer a specific question, pass topic with a few words describing what you need, taken from the question itself. Without it the preview is the top of the page, which on documentation is the table of contents. The user never has to supply keywords for this.",
-      "Use magpi_fetch with mode 'full' only when you need actual source files (clones a repo or downloads a package into the cache).",
+      "Use magpi_fetch with mode 'full' for repo clones, package downloads, or full arXiv paper text from an /abs/ URL. arXiv /html/ and /pdf/ URLs return paper text in light mode too.",
     ],
     parameters: Type.Object({
       url: Type.Optional(Type.String({ description: "URL to fetch (scheme optional, https assumed)" })),
@@ -391,7 +394,7 @@ export default function (pi: ExtensionAPI) {
       ),
       mode: Type.Optional(
         StringEnum(["light", "full"] as const, {
-          description: "light (default): readme/extract/metadata. full: clone repo or download+extract package.",
+          description: "light (default): readme/extract/metadata; arXiv /html/ and /pdf/ return paper text. full: clone repo, download+extract package, or full arXiv paper text.",
         }),
       ),
       topic: Type.Optional(
@@ -416,7 +419,7 @@ export default function (pi: ExtensionAPI) {
             : `✗ ${b.url}: ${b.error}`,
         );
         lines.push("\nRead/grep the paths above for content.");
-        return { content: [{ type: "text", text: lines.join("\n") }], details: { batch } };
+        return { content: [{ type: "text", text: lines.join("\n") }], details: { batch } satisfies FetchDetails };
       }
 
       const { entry, fromCache, stale } = await fetchToCache(targets[0], mode, params.refresh, ctx, signal, onUpdate);
@@ -424,8 +427,8 @@ export default function (pi: ExtensionAPI) {
       // With a topic, return the sections that answer it; without one, the head of the document.
       // A topic that matches nothing falls back to the head, so a bad guess is never worse than no guess.
       const topical = params.topic ? matchTopic(content, params.topic, PREVIEW_BYTES) : undefined;
-      const head = topical ? undefined : truncateHead(content, { maxLines: PREVIEW_LINES, maxBytes: PREVIEW_BYTES });
-      const preview = topical?.content ?? head!.content;
+      const view = topical ?? truncateHead(content, { maxLines: PREVIEW_LINES, maxBytes: PREVIEW_BYTES });
+      const preview = view.content;
       accounting.recordWithheld(content.length - preview.length);
 
       const footer = [
@@ -437,29 +440,30 @@ export default function (pi: ExtensionAPI) {
             : ` | fetched ${entry.meta.fetchedAt}`),
         topical ? `sections matching "${params.topic}": ${topical.headings.join(" | ")}` : "",
         `full text: ${entry.contentPath} (${formatSize(entry.meta.contentBytes)})` +
-          (topical || head!.truncated ? " (partial view above; read the file for the rest)" : ""),
+          (!("truncated" in view) || view.truncated ? " (partial view above; read the file for the rest)" : ""),
         entry.treePath ? `files: ${entry.treePath} (use ls/read/grep there)` : "",
       ]
         .filter(Boolean)
         .join("\n");
 
+      const details = {
+        url: entry.meta.url,
+        mode,
+        handler: entry.meta.handler,
+        kind: entry.meta.kind,
+        title: entry.meta.title,
+        fetchedAt: entry.meta.fetchedAt,
+        topic: params.topic,
+        sections: topical?.headings,
+        fromCache,
+        stale,
+        contentBytes: entry.meta.contentBytes,
+        contentPath: entry.contentPath,
+        treePath: entry.treePath,
+      };
       return {
         content: [{ type: "text", text: preview + footer }],
-        details: {
-          url: entry.meta.url,
-          mode,
-          handler: entry.meta.handler,
-          kind: entry.meta.kind,
-          title: entry.meta.title,
-          fetchedAt: entry.meta.fetchedAt,
-          topic: params.topic,
-          sections: topical?.headings,
-          fromCache,
-          stale,
-          contentBytes: entry.meta.contentBytes,
-          contentPath: entry.contentPath,
-          treePath: entry.treePath,
-        },
+        details: details satisfies FetchDetails,
       };
     },
     // Display-only (never touches session content or LLM context): a calm one-liner collapsed, full preview on expand.
@@ -479,15 +483,16 @@ export default function (pi: ExtensionAPI) {
         const msg = (result?.content?.[0] as { text?: string } | undefined)?.text ?? "fetching...";
         return new Text(theme.fg("warning", msg), 0, 0);
       }
-      const d = (result.details ?? {}) as Record<string, any>;
+      const d = result.details as FetchDetails | undefined;
       let line: string;
-      if (Array.isArray(d.batch)) {
-        line = theme.fg("success", `✓ ${d.batch.filter((b: any) => b.ok).length}/${d.batch.length} fetched to cache`);
+      if (d && "batch" in d) {
+        line = theme.fg("success", `✓ ${d.batch.filter((b) => b.ok).length}/${d.batch.length} fetched to cache`);
       } else {
-        const src = d.fromCache ? (d.stale ? "stale cache" : "cache") : "fetched";
+        let src = "fetched";
+        if (d?.fromCache) src = d.stale ? "stale cache" : "cache";
         line =
           theme.fg("success", "✓ ") +
-          theme.fg("muted", `${d.kind ?? "?"} via ${d.handler ?? "?"} · ${src}${d.contentBytes ? ` · ${formatSize(d.contentBytes)}` : ""}`);
+          theme.fg("muted", `${d?.kind ?? "?"} via ${d?.handler ?? "?"} · ${src}${d?.contentBytes ? ` · ${formatSize(d.contentBytes)}` : ""}`);
       }
       if (expanded) {
         const raw = (result.content?.[0] as { text?: string } | undefined)?.text ?? "";
@@ -596,7 +601,7 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const { results, errors } = await webSearch(params.query, params.source ?? "auto", signal, (s) =>
-        onUpdate?.({ content: [{ type: "text", text: `searching ${s}...` }] }),
+        onUpdate?.({ content: [{ type: "text", text: `searching ${s}...` }], details: undefined }),
       );
       if (results.length > 0) {
         const note = errors.length ? `\n\n(sources skipped: ${errors.join("; ")})` : "";
