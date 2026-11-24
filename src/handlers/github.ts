@@ -41,13 +41,17 @@ async function githubLight(owner: string, repo: string, ctx: FetchContext): Prom
     readme = res.text;
   } catch {
     // API rate-limited or private: fall back to raw README guesses
+    // (filenames are case-sensitive on raw.githubusercontent.com)
     for (const ref of ["HEAD", "main", "master"]) {
-      try {
-        readme = (await getText(`https://raw.githubusercontent.com/${owner}/${repo}/${ref}/README.md`, ctx.signal)).text;
-        break;
-      } catch {
-        // try next ref
+      for (const name of ["README.md", "readme.md"]) {
+        try {
+          readme = (await getText(`https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${name}`, ctx.signal)).text;
+          break;
+        } catch {
+          // try next name
+        }
       }
+      if (readme) break;
     }
   }
   if (!readme) throw new FetchError(`Could not fetch README for ${owner}/${repo}; try mode "full" to clone`);
