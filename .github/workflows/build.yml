@@ -22,26 +22,7 @@ jobs:
         run: >
           npx tsx --test
           --test-reporter=spec
-          --test-reporter=junit
+          --test-reporter=node-test-github-reporter
           --test-reporter-destination=stdout
-          --test-reporter-destination=test-report.xml
+          --test-reporter-destination=stdout
           "test/*.selfcheck.ts"
-
-      # Node's junit reporter emits flat <testsuites><testcase>; the phpunit-junit
-      # parser needs a <testsuite> wrapper, so add one.
-      - name: Wrap junit report
-        run: |
-          node -e '
-            const fs = require("node:fs");
-            const xml = fs.readFileSync("test-report.xml", "utf8").replace(/<\?xml[^?]*\?>\s*/, "");
-            const inner = xml.replace(/^<testsuites>/, "").replace(/<\/testsuites>\s*$/, "");
-            const time = [...inner.matchAll(/time="(\d+\.?\d*)"/g)].reduce((a, m) => a + parseFloat(m[1]), 0).toFixed(3);
-            fs.writeFileSync("test-report.xml", `<?xml version="1.0" encoding="utf-8"?>\n<testsuites><testsuite name="selfchecks" time="${time}">${inner}</testsuite></testsuites>\n`);
-          '
-
-      - uses: dorny/test-reporter@v3
-        if: always()
-        with:
-          name: Selfchecks
-          path: test-report.xml
-          reporter: phpunit-junit
