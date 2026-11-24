@@ -9,3 +9,12 @@ updates:
       npm:
         patterns:
           - "*"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "thursday"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
