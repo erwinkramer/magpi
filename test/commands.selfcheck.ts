@@ -22,7 +22,6 @@ test("a partial subcommand narrows the menu", () => {
 });
 
 test("numeric subcommands suggest whole-argument values", () => {
-  assert.deepEqual(values("search "), ["search ask", "search skip"]);
   assert.deepEqual(values("ttl "), ["ttl 1", "ttl 24", "ttl 168", "ttl 720"]);
   assert.deepEqual(values("ttl 7"), ["ttl 720"], "typed digits filter the suggestions");
   assert.deepEqual(values("max "), ["max 0", "max 100", "max 500", "max 2000"]);

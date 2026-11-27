@@ -52,7 +52,7 @@ MagPi remembers what it fetched, and makes sure the model does too. This is the 
 
 ### `magpi_search`
 
-This is deliberately a **last resort**, and honest about it. If you have a real search tool installed, or if your LLM has search capabilities, use that for searching. MagPi's job here is only to make sure a setup with nothing configured still has something. It tries DuckDuckGo Lite, then Wikipedia, then HN Algolia, then Context7 (all free rate-limited endpoints; the first source with results wins). A rate-limited source is skipped for the next one immediately, with no retry and no backoff: sleeping inside a tool call costs more than failing over. When everything fails, the `searchFallback` setting decides: `"ask"` (default) asks *you* to paste results — the dialog names the query to run and takes URLs one per line, and the model is told to ask you before answering from stale memory or training data — while `"skip"` reports the failure as a normal tool result and the session carries on unattended. Feed the URLs it finds to `magpi_fetch`, or pass `fetch_top` to pull the top results into the cache in the same call.
+This is deliberately a **last resort**, and honest about it. If you have a real search tool installed, or if your LLM has search capabilities, use that for searching. MagPi's job here is only to make sure a setup with nothing configured still has something. It tries DuckDuckGo Lite, then Wikipedia, then HN Algolia, then Context7 (all free rate-limited endpoints; the first source with results wins). A rate-limited source is skipped for the next one immediately, with no retry and no backoff: sleeping inside a tool call costs more than failing over. When everything fails, the `searchFallback` setting decides: `"ask"` (default) asks *you* to paste results — the dialog names the query to run and takes URLs one per line, and the model is told to ask you before answering from stale memory or training data — while `"skip"` reports the failure as a normal tool result and the session carries on unattended — the model is still told not to silently fall back to memory: it tries the local cache or a URL it already knows, and says plainly if it finds no evidence. Feed the URLs it finds to `magpi_fetch`, or pass `fetch_top` to pull the top results into the cache in the same call.
 
 Context7 is last in the rotation on purpose: it only knows libraries, so on a general query it would answer confidently and wrongly. It earns the last slot by being the steadiest of the four when the others are rate-limited. Ask for it by name (`source: "context7"`) to search library and framework documentation directly, which beats a web search for API questions. Its results point at Context7's plaintext endpoint, so `magpi_fetch` caches them like anything else.
 
@@ -91,7 +91,6 @@ MagPi arranges this split automatically: when other search tools are active, `ma
 /magpi scope global|project
 /magpi ttl <hours>
 /magpi max <MB>        # size budget; least-recently-used entries evicted past it (0 = off)
-/magpi search ask|skip # what magpi_search does when every source fails (default: ask)
 /magpi reindex         # rebuild the search index from the files on disk
 /magpi handlers
 ```
@@ -106,7 +105,7 @@ MagPi arranges this split automatically: when other search tools are active, `ma
   "ttlHours": 24,               // entries older than this are refetched
   "maxCacheMB": 0,              // size budget with LRU eviction; 0 = unlimited
   "allowPrivateNetwork": false, // permit fetching loopback/private addresses (intranet handlers, local dev servers)
-  "searchFallback": "ask"       // magpi_search when every source fails: "ask" prompts you to paste results (default), "skip" reports the failure and carries on
+  "searchFallback": "ask"       // magpi_search when every source fails: "ask" prompts you to paste results (default), "skip" reports the failure and carries on (never a silent memory fallback)
 }
 ```
 

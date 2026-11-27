@@ -54,7 +54,6 @@ const SUBCOMMANDS: Completion[] = [
   { value: "scope project", description: "Write new entries to this project's cache" },
   { value: "ttl", description: "Set how many hours an entry stays fresh" },
   { value: "max", description: "Set the cache size budget in MB" },
-  { value: "search", description: "What magpi_search does when every source fails: ask (default) or skip (unattended)" },
   { value: "reindex", description: "Rebuild the search index from the files on disk" },
   { value: "handlers", description: "List the registered fetch handlers" },
   { value: "help", description: "Show the reference card" },
@@ -80,7 +79,6 @@ const HELP = [
   "  /magpi scope global|project  where new entries are written",
   "  /magpi ttl <hours>           how long an entry stays fresh (default 24)",
   "  /magpi max <MB>              size budget, 0 disables eviction",
-  "  /magpi search ask|skip       what magpi_search does when every source fails (default: ask)",
   "  /magpi reindex               rebuild the search index from the files on disk",
   "  /magpi handlers              list the registered fetch handlers",
   "  /magpi help                  this card",
@@ -106,10 +104,6 @@ const SUBCOMMAND_VALUES = {
     { value: "168", description: "1 week" },
     { value: "720", description: "30 days, for reference docs" },
   ],
-  search: [
-    { value: "ask", description: "Prompt you to paste results (default)" },
-    { value: "skip", description: "Report the failure and carry on, unattended" },
-  ],
   max: [
     { value: "0", description: "No budget, keep everything" },
     { value: "100", description: "100 MB" },
@@ -123,6 +117,57 @@ const toItems = (rows: Completion[], prefix = "") =>
     const value = prefix ? `${prefix} ${r.value}` : r.value;
     return { value, label: value, description: r.description };
   });
+
+/**
+ * What magpi_search does when every source failed: "skip" reports the failure as a normal tool result and carries on unattended; "ask" prompts the user to paste results, and throws when there is no UI or the paste is empty.
+ * The guidance keeps the two concerns apart: what the model owes (no silent memory fallback, plain admission when there is no evidence) vs. what magpi does to the user (prompt or not).
+ * The dialog title is the only text pi's input dialog renders, so the whole briefing goes there; the placeholder is dropped in the TUI and shown over RPC.
+ * Exported for the selfcheck.
+ */
+export async function searchFailure(
+  query: string,
+  errors: string[],
+  fallback: "ask" | "skip",
+  ctx: { hasUI: boolean; ui: { input(lines: string, placeholder?: string): Promise<string | undefined> } },
+) {
+  if (fallback === "skip") {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `All search sources failed for "${query}" (${errors.join("; ")}). Do not silently fall back to memory: search the local library with magpi_cached, fetch a URL you already know, or narrow the query. If those turn up no evidence, say so plainly and carry on - do not ask the user to search.`,
+        },
+      ],
+      details: { query, results: [], failed: true, errors },
+    };
+  }
+  if (ctx.hasUI) {
+    const pasted = await ctx.ui.input(
+      [
+        "🐦 magpi: every search source failed, so the agent needs you to search for it.",
+        "",
+        `Look up:  ${query}`,
+        "",
+        // One line per paragraph: the dialog wraps to the terminal, and a pre-wrapped paragraph comes out ragged on a narrow one.
+        "Paste result URLs below, one per line. Titles and snippets are welcome but not required, because the agent fetches and reads the pages itself. A single good link is enough to unblock it.",
+        "",
+        "Submit empty to skip, and the agent carries on without search results.",
+        "",
+        `Sources tried: ${errors.join("; ")}`,
+      ].join("\n"),
+      "https://... one url per line",
+    );
+    if (pasted?.trim()) {
+      return {
+        content: [{ type: "text", text: `User-provided search results:\n${pasted.trim()}` }],
+        details: { query, userProvided: true },
+      };
+    }
+  }
+  throw new Error(
+    `All search sources failed (${errors.join("; ")}). Ask the user to search the web for "${query}" and share results or URLs.`,
+  );
+}
 
 /**
  * Complete a /magpi argument.
@@ -249,19 +294,19 @@ export default function (pi: ExtensionAPI) {
       .getAllTools()
       .filter((t) => t.name !== "" && t.name !== "magpi_search" && /search/i.test(t.name) && active.has(t.name))
       .map((t) => t.name);
-    // Failure guidance follows searchFallback: "skip" never asks the user to search.
+    // Failure guidance follows searchFallback, and keeps the two concerns apart:
+    // what magpi does to the user (ask or not) vs. what the model owes (no silent memory fallback).
     const failureLine =
       cfg.searchFallback === "skip"
-        ? "If magpi_search reports every source failed, carry on with what you have: search the local library with magpi_cached, fetch a URL you already know, or narrow the query. Do not ask the user to search."
+        ? "If magpi_search reports every source failed, do not silently fall back to memory: search the local library with magpi_cached, fetch a URL you already know, or narrow the query. If those turn up no evidence, say so plainly and carry on - the session is unattended, so do not ask the user to search."
         : "If all search fails, ask the user to search and paste results; do not silently fall back to memory.";
+    const lines: string[] = [];
     if (competitors.length > 0) {
       const rivals = competitors.join(", ");
-      event.systemPromptOptions.toolGuidelines["magpi_search"] = [
-        `Prefer ${rivals} for web searches; use magpi_search only if ${rivals} fails or is unavailable. Either way, magpi_fetch the promising URLs. ${failureLine}`,
-      ];
-    } else if (cfg.searchFallback === "skip") {
-      event.systemPromptOptions.toolGuidelines["magpi_search"] = [failureLine];
+      lines.push(`Prefer ${rivals} for web searches; use magpi_search only if ${rivals} fails or is unavailable. Either way, magpi_fetch the promising URLs.`);
     }
+    lines.push(failureLine);
+    event.systemPromptOptions.toolGuidelines["magpi_search"] = lines;
 
     if (event.messageType !== "user") return;
     const urls = [...new Set(event.prompt.match(/https?:\/\/[^\s)\]}>"']+/g) ?? [])].slice(0, 8);
@@ -616,7 +661,7 @@ export default function (pi: ExtensionAPI) {
       "Search DuckDuckGo Lite, Wikipedia, HN Algolia, or Context7. Returns titles, URLs, and snippets; fetch result URLs for content. Use source='context7' with a library name for documentation. When no source returns results, behavior follows the searchFallback setting in magpi.json: 'ask' (default) prompts the user to paste results; 'skip' reports the failure so the session carries on unattended.",
     promptSnippet: "Best-effort web search (DDG Lite, Wikipedia, HN, Context7 docs), no API keys",
     promptGuidelines: [
-      "Use magpi_search for lookups instead of saying you cannot search; then magpi_fetch the promising URLs. If magpi_search fails or returns nothing useful, ask the user to search and paste results; do not silently fall back to memory.",
+      "Use magpi_search for lookups instead of saying you cannot search; then magpi_fetch the promising URLs. If magpi_search fails or returns nothing useful, do not silently fall back to memory; follow the guidance in its failure message.",
     ],
     parameters: Type.Object({
       query: Type.String({ description: "Search query" }),
@@ -656,46 +701,8 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
-      // All sources down/rate-limited. searchFallback "skip" reports the failure and carries on unattended; "ask" (default) asks the human, unashamedly.
-      // The title is the only text pi's input dialog renders, so the whole briefing goes there; the placeholder is dropped in the TUI and shown over RPC.
-      const cfg = loadConfig(ctx.cwd, ctx.isProjectTrusted());
-      if (cfg.searchFallback === "skip") {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `All search sources failed for "${params.query}" (${errors.join("; ")}). No results — carry on with what you have: search the local library with magpi_cached, fetch a URL you already know, or narrow the query.`,
-            },
-          ],
-          details: { query: params.query, results: [], failed: true, errors },
-        };
-      }
-      if (ctx.hasUI) {
-        const pasted = await ctx.ui.input(
-          [
-            "🐦 magpi: every search source failed, so the agent needs you to search for it.",
-            "",
-            `Look up:  ${params.query}`,
-            "",
-            // One line per paragraph: the dialog wraps to the terminal, and a pre-wrapped paragraph comes out ragged on a narrow one.
-            "Paste result URLs below, one per line. Titles and snippets are welcome but not required, because the agent fetches and reads the pages itself. A single good link is enough to unblock it.",
-            "",
-            "Submit empty to skip, and the agent carries on without search results.",
-            "",
-            `Sources tried: ${errors.join("; ")}`,
-          ].join("\n"),
-          "https://... one url per line",
-        );
-        if (pasted?.trim()) {
-          return {
-            content: [{ type: "text", text: `User-provided search results:\n${pasted.trim()}` }],
-            details: { query: params.query, userProvided: true },
-          };
-        }
-      }
-      throw new Error(
-        `All search sources failed (${errors.join("; ")}). Ask the user to search the web for "${params.query}" and share results or URLs.`,
-      );
+      // All sources down/rate-limited: the searchFallback setting decides whether to ask the human (unashamedly) or carry on unattended.
+      return await searchFailure(params.query, errors, loadConfig(ctx.cwd, ctx.isProjectTrusted()).searchFallback, ctx);
     },
     renderCall(args, theme) {
       const a = (args ?? {}) as { query?: string; source?: string };
@@ -815,19 +822,6 @@ export default function (pi: ExtensionAPI) {
           } else {
             notify(["Cache budget disabled"]);
           }
-          return;
-        }
-        case "search": {
-          if (arg !== "ask" && arg !== "skip") {
-            notify(["Usage: /magpi search ask|skip"], "error");
-            return;
-          }
-          saveConfig(globalConfigPath(), { searchFallback: arg });
-          notify([
-            arg === "ask"
-              ? "Search fallback set to ask: failures of every source will prompt you to paste results"
-              : "Search fallback set to skip: failures of every source are reported and the session carries on",
-          ]);
           return;
         }
         case "reindex": {
