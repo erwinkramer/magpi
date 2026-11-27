@@ -18,11 +18,20 @@ export interface MagpiConfig {
   maxCacheMB: number;
   /** Allow fetching loopback/private-network addresses (intranet wikis, local dev servers). */
   allowPrivateNetwork: boolean;
+  /** Exact Pi tool name to prefer over magpi_search; null disables automatic demotion. */
+  preferredWebSearchTool: string | null;
   /** What magpi_search does when every source fails: "ask" prompts the user to paste results; "skip" reports the failure and the session carries on. */
   searchFallback: "ask" | "skip";
 }
 
-export const DEFAULTS: MagpiConfig = { cacheScope: "global", ttlHours: 24, maxCacheMB: 0, allowPrivateNetwork: false, searchFallback: "ask" };
+export const DEFAULTS: MagpiConfig = {
+  cacheScope: "global",
+  ttlHours: 24,
+  maxCacheMB: 0,
+  allowPrivateNetwork: false,
+  preferredWebSearchTool: null,
+  searchFallback: "ask",
+};
 
 export const globalConfigPath = () => join(homedir(), CONFIG_DIR, "agent", "magpi.json");
 export const projectConfigPath = (cwd: string) => join(cwd, CONFIG_DIR, "magpi.json");
@@ -35,19 +44,29 @@ function readJson(path: string): Partial<MagpiConfig> {
   }
 }
 
+function normalizePreferredWebSearchTool(value: unknown): string | null {
+  if (typeof value !== "string" || !value || value.trim() !== value || value === "magpi_search") return null;
+  return value;
+}
+
 /** Global config, overridden by project config (only when the project is trusted). */
 export function loadConfig(cwd: string, projectTrusted: boolean): MagpiConfig {
-  return {
+  const merged = {
     ...DEFAULTS,
     ...readJson(globalConfigPath()),
     ...(projectTrusted ? readJson(projectConfigPath(cwd)) : {}),
+  };
+  return {
+    ...merged,
+    preferredWebSearchTool: normalizePreferredWebSearchTool(merged.preferredWebSearchTool),
+    searchFallback: merged.searchFallback === "skip" ? "skip" : "ask",
   };
 }
 
 export function saveConfig(path: string, patch: Partial<MagpiConfig>): void {
   const merged = { ...readJson(path), ...patch };
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(merged, null, 2) + "\n", "utf8");
+  writeFileSync(path, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
 }
 
 export const globalCacheRoot = () => join(homedir(), CONFIG_DIR, "agent", "magpi-cache");

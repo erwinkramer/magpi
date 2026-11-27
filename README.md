@@ -22,8 +22,6 @@ pi install -l npm:pi-magpi     # project-local
 
 Or try it without installing: `pi -e npm:pi-magpi`
 
-> The tools are namespaced (`magpi_fetch`, `magpi_search`) so they coexist with other web-access extensions. Already running one? Keep it: MagPi defers to real search tools automatically and sticks to what it's best at, fetching. See "MagPi and pi-web-access" below.
-
 ## Tools
 
 ### `magpi_fetch`
@@ -56,8 +54,6 @@ This is deliberately a **last resort**, and honest about it. If you have a real 
 
 Context7 is last in the rotation on purpose: it only knows libraries, so on a general query it would answer confidently and wrongly. It earns the last slot by being the steadiest of the four when the others are rate-limited. Ask for it by name (`source: "context7"`) to search library and framework documentation directly, which beats a web search for API questions. Its results point at Context7's plaintext endpoint, so `magpi_fetch` caches them like anything else.
 
-The last-resort role is automatic: at session start MagPi looks for other active search tools, and if one exists, tells the model to prefer it by name and treat MagPi as the fallback.
-
 ## Beyond the cache
 
 - **Context pruning**: older fetch previews collapse to a one-line pointer via canonical session context edits. The full text stays on disk. Rewriting an old message costs a prompt cache break, so a pass runs only when the previews it reclaims are worth a large enough share of the context that break invalidates. Edits persist in the session, surviving resume and branch navigation.
@@ -78,7 +74,8 @@ MagPi's game is fetching cheaply. So the ideal setup is both: search with someth
 
 pi-web-access also works on a bare install, through Exa MCP and pi's own Codex auth. Where the two differ is the model: its summaries, `answer` mode, and `source_check` run one, which buys the synthesis MagPi leaves to the agent. MagPi behaves the same on every model, which is worth more the smaller (or stranger) your model is.
 
-MagPi arranges this split automatically: when other search tools are active, `magpi_search` dynamically demotes itself via diffed prompt guidelines and tells the model to prefer that tool by name. You install both, and each does what it's best at.
+> [!TIP]
+> Already using another search tool? Ask the model to set `preferredWebSearchTool` in `magpi.json` to that tool's exact Pi name (for pi-web-access, `web_search`). MagPi hides `magpi_search` while that tool is active; `magpi_fetch` and `magpi_cached` stay available. Use `pi --exclude-tools magpi_search` to disable search completely.
 
 ## `/magpi` command
 
@@ -97,15 +94,16 @@ MagPi arranges this split automatically: when other search tools are active, `ma
 
 ## Configuration
 
-`~/.pi/agent/magpi.json` (global), overridden by `.pi/magpi.json` (project, only when trusted):
+Edit `~/.pi/agent/magpi.json` (global) or `.pi/magpi.json` (trusted project):
 
 ```json
 {
-  "cacheScope": "global",       // where WRITES land: "global" -> ~/.pi/agent/magpi-cache, "project" -> .pi/magpi-cache
-  "ttlHours": 24,               // entries older than this are refetched
-  "maxCacheMB": 0,              // size budget with LRU eviction; 0 = unlimited
-  "allowPrivateNetwork": false, // permit fetching loopback/private addresses (intranet handlers, local dev servers)
-  "searchFallback": "ask"       // magpi_search when every source fails: "ask" prompts you to paste results (default), "skip" reports the failure and carries on (never a silent memory fallback)
+  "cacheScope": "global",          // where WRITES land: "global" -> ~/.pi/agent/magpi-cache, "project" -> .pi/magpi-cache
+  "ttlHours": 24,                  // entries older than this are refetched
+  "maxCacheMB": 0,                 // size budget with LRU eviction; 0 = unlimited
+  "allowPrivateNetwork": false,    // permit fetching loopback/private addresses (intranet handlers, local dev servers)
+  "preferredWebSearchTool": null,  // exact Pi tool name to prefer over magpi_search
+  "searchFallback": "ask"          // magpi_search when every source fails: "ask" prompts you to paste results (default), "skip" reports the failure and carries on (never a silent memory fallback)
 }
 ```
 

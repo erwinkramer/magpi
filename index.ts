@@ -90,7 +90,7 @@ const HELP = [
   "Config (global first, then a trusted project override)",
   "  global   ~/.pi/agent/magpi.json",
   "  project  <project>/.pi/magpi.json",
-  "  keys     cacheScope, ttlHours, maxCacheMB, allowPrivateNetwork, searchFallback",
+  "  keys     cacheScope, ttlHours, maxCacheMB, allowPrivateNetwork, preferredWebSearchTool, searchFallback",
 ];
 
 /** Cache age in the shortest unit that stays accurate: minutes under an hour, hours after. */
@@ -203,6 +203,9 @@ export default function (pi: ExtensionAPI) {
   // URLs fetched this session; forwarded as cache hints across compactions.
   const sessionFetches = new Map<string, { url: string; contentPath: string; treePath?: string }>();
 
+  // Resolved from loadConfig() where cwd and trust are known; read by magpi_search.prepareLoadout.
+  let preferredWebSearchTool: string | null = null;
+
   interface StatusCtx {
     cwd: string;
     hasUI: boolean;
@@ -243,7 +246,9 @@ export default function (pi: ExtensionAPI) {
     for (const p of invalidConfigPaths(ctx.cwd, trusted)) {
       if (ctx.hasUI) ctx.ui.notify(`🐦 magpi: invalid JSON in ${p}; using defaults`, "error");
     }
-    for (const root of bothRoots(ctx.cwd, loadConfig(ctx.cwd, trusted))) {
+    const cfg = loadConfig(ctx.cwd, trusted);
+    preferredWebSearchTool = cfg.preferredWebSearchTool;
+    for (const root of bothRoots(ctx.cwd, cfg)) {
       if (cache.heal(root) === "rebuilt" && ctx.hasUI) ctx.ui.notify(`🐦 magpi: search index rebuilt for ${root}`, "info");
     }
     updateStatus(ctx);
@@ -287,26 +292,16 @@ export default function (pi: ExtensionAPI) {
   // If the user's prompt contains URLs that are already cached and fresh, tell the model where they live; it skips the fetch round-trip entirely.
   unsubs.push(pi.on("before_agent_start", (event, ctx) => {
     const cfg = loadConfig(ctx.cwd, ctx.isProjectTrusted());
-    // Dynamic search-tool self-demotion: if another search tool is active, demote magpi_search
-    // via diffed prompt guidelines so the prompt cache prefix is preserved.
-    const active = new Set(pi.getActiveTools());
-    const competitors = pi
-      .getAllTools()
-      .filter((t) => t.name !== "" && t.name !== "magpi_search" && /search/i.test(t.name) && active.has(t.name))
-      .map((t) => t.name);
+    preferredWebSearchTool = cfg.preferredWebSearchTool;
+
     // Failure guidance follows searchFallback, and keeps the two concerns apart:
     // what magpi does to the user (ask or not) vs. what the model owes (no silent memory fallback).
-    const failureLine =
+    // The static guideline cannot carry the config-dependent choice, so it is diffed in per turn.
+    event.systemPromptOptions.toolGuidelines["magpi_search"] = [
       cfg.searchFallback === "skip"
         ? "If magpi_search reports every source failed, do not silently fall back to memory: search the local library with magpi_cached, fetch a URL you already know, or narrow the query. If those turn up no evidence, say so plainly and carry on - the session is unattended, so do not ask the user to search."
-        : "If all search fails, ask the user to search and paste results; do not silently fall back to memory.";
-    const lines: string[] = [];
-    if (competitors.length > 0) {
-      const rivals = competitors.join(", ");
-      lines.push(`Prefer ${rivals} for web searches; use magpi_search only if ${rivals} fails or is unavailable. Either way, magpi_fetch the promising URLs.`);
-    }
-    lines.push(failureLine);
-    event.systemPromptOptions.toolGuidelines["magpi_search"] = lines;
+        : "If all search fails, ask the user to search and paste results and disclose what could not be verified; do not silently fall back to memory.",
+    ];
 
     if (event.messageType !== "user") return;
     const urls = [...new Set(event.prompt.match(/https?:\/\/[^\s)\]}>"']+/g) ?? [])].slice(0, 8);
@@ -418,7 +413,7 @@ export default function (pi: ExtensionAPI) {
       targets.map(async (t) => {
         try {
           const r = await fetchToCache(t, mode, refresh, ctx, signal);
-          // Fan-out returns paths only, so the whole body stayed out of the prompt.
+          // Fan-out returns paths and freshness metadata; the body stays out of the prompt.
           accounting.recordWithheld(r.entry.meta.contentBytes);
           return r;
         } finally {
@@ -428,7 +423,14 @@ export default function (pi: ExtensionAPI) {
     );
     return settled.map((s, i) =>
       s.status === "fulfilled"
-        ? { ok: true as const, url: targets[i], contentPath: s.value.entry.contentPath, treePath: s.value.entry.treePath }
+        ? {
+            ok: true as const,
+            url: targets[i],
+            contentPath: s.value.entry.contentPath,
+            treePath: s.value.entry.treePath,
+            stale: s.value.stale,
+            fetchedAt: s.value.entry.meta.fetchedAt,
+          }
         : { ok: false as const, url: targets[i], error: String((s.reason as Error)?.message ?? s.reason) },
     );
   }
@@ -476,7 +478,7 @@ export default function (pi: ExtensionAPI) {
         const batch = await fetchMany(targets, mode, params.refresh, ctx, signal, onUpdate);
         const lines = batch.map((b) =>
           b.ok
-            ? `✓ ${b.url}\n   -> ${b.contentPath}${b.treePath ? `\n   -> ${b.treePath} (files)` : ""}`
+            ? `✓ ${b.url}${b.stale ? ` (STALE: fetch failed; serving cached copy from ${b.fetchedAt})` : ""}\n   -> ${b.contentPath}${b.treePath ? `\n   -> ${b.treePath} (files)` : ""}`
             : `✗ ${b.url}: ${b.error}`,
         );
         lines.push("\nRead/grep the paths above for content.");
@@ -502,7 +504,7 @@ export default function (pi: ExtensionAPI) {
       // Fresh cache hit: the body is already on disk (and usually already in context).
       // Echoing it again costs tokens for zero information — just point at the file, without even reading it.
       // A topic is an explicit ask for content, so it still earns the matched sections.
-      // Stale hits (network down) keep the full preview, since the file may be the only copy.
+      // Stale hits keep the full preview, since the file may be the only copy.
       if (fromCache && !stale && !params.topic) {
         accounting.recordWithheld(entry.meta.contentBytes);
         const footer = [
@@ -526,13 +528,18 @@ export default function (pi: ExtensionAPI) {
       const preview = view.content;
       accounting.recordWithheld(content.length - preview.length);
 
+      let fetchStatus = `fetched ${entry.meta.fetchedAt}`;
+      if (fromCache) {
+        const age = ageString(entry.ageHours);
+        const cachedAt = stale
+          ? `STALE: fetch failed; serving cached copy from ${entry.meta.fetchedAt}`
+          : entry.meta.fetchedAt;
+        fetchStatus = `cached ${age} ago (${cachedAt})`;
+      }
       const footer = [
         "",
         "---",
-        `magpi: ${entry.meta.kind} via ${entry.meta.handler}` +
-          (fromCache
-            ? ` | cached ${ageString(entry.ageHours)} ago (${entry.meta.fetchedAt})${stale ? " | STALE: network unavailable, serving old copy" : ""}`
-            : ` | fetched ${entry.meta.fetchedAt}`),
+        `magpi: ${entry.meta.kind} via ${entry.meta.handler} | ${fetchStatus}`, 
         topical ? `sections matching "${params.topic}": ${topical.headings.join(" | ")}` : "",
         `full text: ${entry.contentPath} (${formatSize(entry.meta.contentBytes)})` +
           (!("truncated" in view) || view.truncated ? " (partial view above; read the file for the rest)" : ""),
@@ -567,7 +574,10 @@ export default function (pi: ExtensionAPI) {
       const d = result.details as FetchDetails | undefined;
       let line: string;
       if (d && "batch" in d) {
-        line = theme.fg("success", `✓ ${d.batch.filter((b) => b.ok).length}/${d.batch.length} fetched to cache`);
+        const okCount = d.batch.filter((b) => b.ok).length;
+        const staleCount = d.batch.filter((b) => b.ok && b.stale).length;
+        const staleSuffix = staleCount > 0 ? ` (${staleCount} stale)` : "";
+        line = theme.fg("success", `✓ ${okCount}/${d.batch.length} fetched to cache${staleSuffix}`);
       } else {
         let src = "fetched";
         if (d?.fromCache) src = d.stale ? "stale cache" : "cache";
@@ -661,8 +671,14 @@ export default function (pi: ExtensionAPI) {
       "Search DuckDuckGo Lite, Wikipedia, HN Algolia, or Context7. Returns titles, URLs, and snippets; fetch result URLs for content. Use source='context7' with a library name for documentation. When no source returns results, behavior follows the searchFallback setting in magpi.json: 'ask' (default) prompts the user to paste results; 'skip' reports the failure so the session carries on unattended.",
     promptSnippet: "Best-effort web search (DDG Lite, Wikipedia, HN, Context7 docs), no API keys",
     promptGuidelines: [
-      "Use magpi_search for lookups instead of saying you cannot search; then magpi_fetch the promising URLs. If magpi_search fails or returns nothing useful, do not silently fall back to memory; follow the guidance in its failure message.",
+      "Use magpi_search as a fallback for web discovery instead of saying you cannot search; then magpi_fetch the promising URLs. If magpi_search fails or returns nothing useful, do not silently fall back to memory and follow the guidance in its failure message.",
     ],
+    prepareLoadout(loadout) {
+      if (!preferredWebSearchTool) return undefined;
+      if (!loadout.declared.some((t) => t.name === preferredWebSearchTool)) return undefined;
+      if (loadout.getExposure(preferredWebSearchTool) !== "direct") return undefined;
+      return { hiddenDeclarations: ["magpi_search"] };
+    },
     parameters: Type.Object({
       query: Type.String({ description: "Search query" }),
       source: Type.Optional(
@@ -692,7 +708,11 @@ export default function (pi: ExtensionAPI) {
           fetchedNote =
             "\n\nfetched to cache:\n" +
             fetched
-              .map((f) => (f.ok ? `${f.url}\n  -> ${f.contentPath}` : `${f.url}: failed (${f.error})`))
+              .map((f) =>
+                f.ok
+                  ? `${f.url}${f.stale ? ` (STALE: fetch failed; serving cached copy from ${f.fetchedAt})` : ""}\n  -> ${f.contentPath}`
+                  : `${f.url}: failed (${f.error})`,
+              )
               .join("\n");
         }
         return {
