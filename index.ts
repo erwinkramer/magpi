@@ -90,7 +90,7 @@ const HELP = [
   "Config (global first, then a trusted project override)",
   "  global   ~/.pi/agent/magpi.json",
   "  project  <project>/.pi/magpi.json",
-  "  keys     cacheScope, ttlHours, maxCacheMB, allowPrivateNetwork",
+  "  keys     cacheScope, ttlHours, maxCacheMB, allowPrivateNetwork, preferredWebSearchTool",
 ];
 
 /** Cache age in the shortest unit that stays accurate: minutes under an hour, hours after. */
@@ -152,6 +152,9 @@ export default function (pi: ExtensionAPI) {
   // URLs fetched this session; forwarded as cache hints across compactions.
   const sessionFetches = new Map<string, { url: string; contentPath: string; treePath?: string }>();
 
+  // Resolved from loadConfig() where cwd and trust are known; read by magpi_search.prepareLoadout.
+  let preferredWebSearchTool: string | null = null;
+
   interface StatusCtx {
     cwd: string;
     hasUI: boolean;
@@ -192,7 +195,9 @@ export default function (pi: ExtensionAPI) {
     for (const p of invalidConfigPaths(ctx.cwd, trusted)) {
       if (ctx.hasUI) ctx.ui.notify(`🐦 magpi: invalid JSON in ${p}; using defaults`, "error");
     }
-    for (const root of bothRoots(ctx.cwd, loadConfig(ctx.cwd, trusted))) {
+    const cfg = loadConfig(ctx.cwd, trusted);
+    preferredWebSearchTool = cfg.preferredWebSearchTool;
+    for (const root of bothRoots(ctx.cwd, cfg)) {
       if (cache.heal(root) === "rebuilt" && ctx.hasUI) ctx.ui.notify(`🐦 magpi: search index rebuilt for ${root}`, "info");
     }
     updateStatus(ctx);
@@ -235,24 +240,12 @@ export default function (pi: ExtensionAPI) {
 
   // If the user's prompt contains URLs that are already cached and fresh, tell the model where they live; it skips the fetch round-trip entirely.
   unsubs.push(pi.on("before_agent_start", (event, ctx) => {
-    // Dynamic search-tool self-demotion: if another search tool is active, demote magpi_search
-    // via diffed prompt guidelines so the prompt cache prefix is preserved.
-    const active = new Set(pi.getActiveTools());
-    const competitors = pi
-      .getAllTools()
-      .filter((t) => t.name !== "" && t.name !== "magpi_search" && /search/i.test(t.name) && active.has(t.name))
-      .map((t) => t.name);
-    if (competitors.length > 0) {
-      const rivals = competitors.join(", ");
-      event.systemPromptOptions.toolGuidelines["magpi_search"] = [
-        `Prefer ${rivals} for web searches; use magpi_search only if ${rivals} fails or is unavailable. Either way, magpi_fetch the promising URLs. If all search fails, ask the user to search and paste results; do not silently fall back to memory.`,
-      ];
-    }
+    const cfg = loadConfig(ctx.cwd, ctx.isProjectTrusted());
+    preferredWebSearchTool = cfg.preferredWebSearchTool;
 
     if (event.messageType !== "user") return;
     const urls = [...new Set(event.prompt.match(/https?:\/\/[^\s)\]}>"']+/g) ?? [])].slice(0, 8);
     if (urls.length === 0) return;
-    const cfg = loadConfig(ctx.cwd, ctx.isProjectTrusted());
     const roots = bothRoots(ctx.cwd, cfg);
     const hits: string[] = [];
     for (const raw of urls) {
@@ -603,8 +596,14 @@ export default function (pi: ExtensionAPI) {
       "Search DuckDuckGo Lite, Wikipedia, HN Algolia, or Context7. Returns titles, URLs, and snippets; fetch result URLs for content. Use source='context7' with a library name for documentation. If no results are returned, ask the user to search and paste results.",
     promptSnippet: "Best-effort web search (DDG Lite, Wikipedia, HN, Context7 docs), no API keys",
     promptGuidelines: [
-      "Use magpi_search for lookups instead of saying you cannot search; then magpi_fetch the promising URLs. If magpi_search fails or returns nothing useful, ask the user to search and paste results; do not silently fall back to memory.",
+      "Use magpi_search as a fallback for web discovery instead of saying you cannot search; then magpi_fetch the promising URLs. If magpi_search fails or returns nothing useful, ask the user to search and paste results and disclose what could not be verified; do not silently fall back to memory.",
     ],
+    prepareLoadout(loadout) {
+      if (!preferredWebSearchTool) return undefined;
+      if (!loadout.declared.some((t) => t.name === preferredWebSearchTool)) return undefined;
+      if (loadout.getExposure(preferredWebSearchTool) !== "direct") return undefined;
+      return { hiddenDeclarations: ["magpi_search"] };
+    },
     parameters: Type.Object({
       query: Type.String({ description: "Search query" }),
       source: Type.Optional(
