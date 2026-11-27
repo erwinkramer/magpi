@@ -103,22 +103,30 @@ test("arxiv HTML URLs extract the paper in either mode and surface fetch failure
 });
 
 test("withDeadline gives up on work that ignores its signal", async () => {
-  const wedged = () => new Promise<string>(() => {}); // never settles, never listens
-  await assert.rejects(withDeadline(50, undefined, wedged), /gave up after/);
+  // AbortSignal.timeout's timer is unref'd, so on a bare process the event
+  // loop can drain while the deadline is pending and node:test cancels the
+  // test. Keep a ref'd handle alive for the duration.
+  const keepAlive = setInterval(() => {}, 10);
+  try {
+    const wedged = () => new Promise<string>(() => {}); // never settles, never listens
+    await assert.rejects(withDeadline(50, undefined, wedged), /gave up after/);
 
-  const quick = await withDeadline(5_000, undefined, async (signal) => {
-    assert.equal(signal.aborted, false, "work sees a live signal");
-    return "done";
-  });
-  assert.equal(quick, "done");
+    const quick = await withDeadline(5_000, undefined, async (signal) => {
+      assert.equal(signal.aborted, false, "work sees a live signal");
+      return "done";
+    });
+    assert.equal(quick, "done");
 
-  // The caller's own cancellation still reaches the work.
-  const outer = new AbortController();
-  const seen = withDeadline(5_000, outer.signal, (signal) =>
-    new Promise<string>((resolve) => signal.addEventListener("abort", () => resolve("cancelled"))),
-  );
-  outer.abort();
-  assert.equal(await seen, "cancelled");
+    // The caller's own cancellation still reaches the work.
+    const outer = new AbortController();
+    const seen = withDeadline(5_000, outer.signal, (signal) =>
+      new Promise<string>((resolve) => signal.addEventListener("abort", () => resolve("cancelled"))),
+    );
+    outer.abort();
+    assert.equal(await seen, "cancelled");
+  } finally {
+    clearInterval(keepAlive);
+  }
 });
 
 test("registerHandler validates shape and takes priority", () => {
