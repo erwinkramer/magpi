@@ -353,7 +353,7 @@ export default function (pi: ExtensionAPI) {
       targets.map(async (t) => {
         try {
           const r = await fetchToCache(t, mode, refresh, ctx, signal);
-          // Fan-out returns paths only, so the whole body stayed out of the prompt.
+          // Fan-out returns paths and freshness metadata; the body stays out of the prompt.
           accounting.recordWithheld(r.entry.meta.contentBytes);
           return r;
         } finally {
@@ -363,7 +363,14 @@ export default function (pi: ExtensionAPI) {
     );
     return settled.map((s, i) =>
       s.status === "fulfilled"
-        ? { ok: true as const, url: targets[i], contentPath: s.value.entry.contentPath, treePath: s.value.entry.treePath }
+        ? {
+            ok: true as const,
+            url: targets[i],
+            contentPath: s.value.entry.contentPath,
+            treePath: s.value.entry.treePath,
+            stale: s.value.stale,
+            fetchedAt: s.value.entry.meta.fetchedAt,
+          }
         : { ok: false as const, url: targets[i], error: String((s.reason as Error)?.message ?? s.reason) },
     );
   }
@@ -411,7 +418,7 @@ export default function (pi: ExtensionAPI) {
         const batch = await fetchMany(targets, mode, params.refresh, ctx, signal, onUpdate);
         const lines = batch.map((b) =>
           b.ok
-            ? `✓ ${b.url}\n   -> ${b.contentPath}${b.treePath ? `\n   -> ${b.treePath} (files)` : ""}`
+            ? `✓ ${b.url}${b.stale ? ` (STALE: fetch failed; serving cached copy from ${b.fetchedAt})` : ""}\n   -> ${b.contentPath}${b.treePath ? `\n   -> ${b.treePath} (files)` : ""}`
             : `✗ ${b.url}: ${b.error}`,
         );
         lines.push("\nRead/grep the paths above for content.");
@@ -437,7 +444,7 @@ export default function (pi: ExtensionAPI) {
       // Fresh cache hit: the body is already on disk (and usually already in context).
       // Echoing it again costs tokens for zero information — just point at the file, without even reading it.
       // A topic is an explicit ask for content, so it still earns the matched sections.
-      // Stale hits (network down) keep the full preview, since the file may be the only copy.
+      // Stale hits keep the full preview, since the file may be the only copy.
       if (fromCache && !stale && !params.topic) {
         accounting.recordWithheld(entry.meta.contentBytes);
         const footer = [
@@ -461,13 +468,18 @@ export default function (pi: ExtensionAPI) {
       const preview = view.content;
       accounting.recordWithheld(content.length - preview.length);
 
+      let fetchStatus = `fetched ${entry.meta.fetchedAt}`;
+      if (fromCache) {
+        const age = ageString(entry.ageHours);
+        const cachedAt = stale
+          ? `STALE: fetch failed; serving cached copy from ${entry.meta.fetchedAt}`
+          : entry.meta.fetchedAt;
+        fetchStatus = `cached ${age} ago (${cachedAt})`;
+      }
       const footer = [
         "",
         "---",
-        `magpi: ${entry.meta.kind} via ${entry.meta.handler}` +
-          (fromCache
-            ? ` | cached ${ageString(entry.ageHours)} ago (${entry.meta.fetchedAt})${stale ? " | STALE: network unavailable, serving old copy" : ""}`
-            : ` | fetched ${entry.meta.fetchedAt}`),
+        `magpi: ${entry.meta.kind} via ${entry.meta.handler} | ${fetchStatus}`, 
         topical ? `sections matching "${params.topic}": ${topical.headings.join(" | ")}` : "",
         `full text: ${entry.contentPath} (${formatSize(entry.meta.contentBytes)})` +
           (!("truncated" in view) || view.truncated ? " (partial view above; read the file for the rest)" : ""),
@@ -502,7 +514,10 @@ export default function (pi: ExtensionAPI) {
       const d = result.details as FetchDetails | undefined;
       let line: string;
       if (d && "batch" in d) {
-        line = theme.fg("success", `✓ ${d.batch.filter((b) => b.ok).length}/${d.batch.length} fetched to cache`);
+        const okCount = d.batch.filter((b) => b.ok).length;
+        const staleCount = d.batch.filter((b) => b.ok && b.stale).length;
+        const staleSuffix = staleCount > 0 ? ` (${staleCount} stale)` : "";
+        line = theme.fg("success", `✓ ${okCount}/${d.batch.length} fetched to cache${staleSuffix}`);
       } else {
         let src = "fetched";
         if (d?.fromCache) src = d.stale ? "stale cache" : "cache";
@@ -633,7 +648,11 @@ export default function (pi: ExtensionAPI) {
           fetchedNote =
             "\n\nfetched to cache:\n" +
             fetched
-              .map((f) => (f.ok ? `${f.url}\n  -> ${f.contentPath}` : `${f.url}: failed (${f.error})`))
+              .map((f) =>
+                f.ok
+                  ? `${f.url}${f.stale ? ` (STALE: fetch failed; serving cached copy from ${f.fetchedAt})` : ""}\n  -> ${f.contentPath}`
+                  : `${f.url}: failed (${f.error})`,
+              )
               .join("\n");
         }
         return {
